@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>resonance: moonpond edition</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="node_modules/three/build/three.min.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <!-- New Audio Selection / Drag & Drop Area -->
+            <div id="drop-zone" class="audio-selection-area glass">
+                <div class="selection-content">
+                    <span class="selection-icon">⏀</span>
+                    <button id="btn-audio-file" class="audio-file-btn">AUDIO FILE</button>
+                    <p class="drag-hint">DRAG & DROP TRACK</p>
+                </div>
+                <div id="loading-bar-container" class="loading-bar-container hidden">
+                    <div id="loading-bar" class="loading-bar"></div>
+                </div>
+            </div>
+
+            <!-- Metadata Info -->
+            <div id="track-metadata" class="track-metadata hidden">
+                <div class="meta-item main-title">
+                    <span id="meta-title" class="meta-value large-title">--</span>
+                </div>
+                <div class="meta-subtitle">
+                    <span id="meta-duration">--:--</span> • <span id="meta-format">---</span>
+                </div>
+                <div class="meta-item">
+                    <span class="meta-label">VOLUME</span>
+                    <span id="meta-volume" class="meta-value">-- dB</span>
+                </div>
+            </div>
+
+            <div class="sidebar-header">SYSTEM STATUS</div>
+            <div id="status-log" class="status-log">
+                <div class="log-entry">Awaiting input...</div>
+            </div>
+
+            <div class="sidebar-header">SESSION HISTORY</div>
+            <div id="session-history" class="history-list">
+                <!-- Populated by JS -->
+                <div class="history-placeholder">No recent masters.</div>
+            </div>
+
+            <div class="sidebar-footer">mitosisOS Engine v3.6</div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <header class="app-header">
+                <h1>resonance</h1>
+            </header>
+
+            <!-- Consolidated Audit Panel -->
+            <section class="perspective-panel glass">
+                <div class="perspective-header">audit</div>
+                
+                <div class="audit-dashboard">
+                    <!-- Left: Original DNA -->
+                    <div class="audit-column dna-column">
+                        <div class="audit-label">SIGNAL DNA AUDIT</div>
+                        <div id="dna-stats" class="audit-list">
+                            <div class="audit-item">
+                                <div class="metric-line">Loudness: <span id="dna-lufs">--</span></div>
+                                <p id="audit-loudness-comment" class="engineer-comment">Analyzing potential energy...</p>
+                            </div>
+                            <div class="audit-item">
+                                <div class="metric-line">Spectral: <span id="dna-slope">--</span></div>
+                                <p id="audit-spectral-comment" class="engineer-comment">Mapping tonal balance...</p>
+                            </div>
+                            <div class="audit-item">
+                                <div class="metric-line">Stereo: <span id="dna-width">--</span></div>
+                                <p id="audit-stereo-comment" class="engineer-comment">Auditing phase alignment...</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Right: Tandem Plan -->
+                    <div class="audit-column compensation-column">
+                        <div class="audit-label">TANDEM COMPENSATION PLAN</div>
+                        <div id="proposed-chain" class="audit-list">
+                            <div class="audit-item">
+                                <div class="metric-line">MODERN MASTER</div>
+                                <p class="engineer-comment">Pushing harmonic density and contemporary loudness standards.</p>
+                            </div>
+                            <div class="audit-item">
+                                <div class="metric-line">ACOUSTIC CLEAR</div>
+                                <p class="engineer-comment">Prioritizing phase-coherent air and organic transient preservation.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="perspective-text" class="perspective-content">
+                    Ready to audit. Drop a track to begin tandem signal mapping.
+                </div>
+            </section>
+
+            <section class="metrics-grid">
+                <div class="metric-card glass" data-tooltip="LOUDNESS: Measured in LUFS. Target: -14 LUFS.">
+                    <span class="card-title">LOUDNESS</span>
+                    <span id="lufs-value" class="card-value">--</span>
+                </div>
+                <div class="metric-card glass" data-tooltip="SPECTRAL: Ideal slope ~1.3 (Pink Noise).">
+                    <span class="card-title">SPECTRAL</span>
+                    <span id="spectral-value" class="card-value">--</span>
+                </div>
+                <div class="metric-card glass" data-tooltip="WIDTH: Correlation +1.0 is mono.">
+                    <span class="card-title">WIDTH</span>
+                    <span id="width-value" class="card-value">--</span>
+                </div>
+            </section>
+
+            <!-- Expanded Visualization Engine Spot -->
+            <section id="viz-container" class="viz-area glass">
+                <div id="three-canvas-container"></div>
+                <div class="viz-overlay">
+                    <div id="timeline-labels"></div>
+                </div>
+            </section>
+
+            <section id="suggestions-area" class="suggestions-grid hidden"></section>
+
+            <footer class="action-footer">
+                <button id="btn-execute" class="btn primary" disabled>MASTER THIS TRACK</button>
+            </footer>
+        </main>
+    </div>
+    <script src="renderer.js"></script>
+</body>
+</html>

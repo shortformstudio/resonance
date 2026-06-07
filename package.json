@@ -1,0 +1,45 @@
+{
+  "name": "audio_master_evaluator",
+  "version": "1.0.0",
+  "description": "",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "build": {
+    "appId": "com.mitosis.resonance",
+    "productName": "Resonance",
+    "directories": {
+      "output": "out"
+    },
+    "files": [
+      "index.html",
+      "style.css",
+      "main.js",
+      "preload.js",
+      "renderer.js"
+    ],
+    "extraResources": [
+      {
+        "from": "dist/resonance-engine",
+        "to": "resonance-engine"
+      }
+    ],
+    "mac": {
+      "target": "dir"
+    }
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "electron": "^42.3.0",
+    "electron-builder": "^26.8.1"
+  },
+  "dependencies": {
+    "three": "^0.184.0"
+  }
+}

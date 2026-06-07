@@ -1,0 +1,12 @@
+node_modules/
+venv/
+__pycache__/
+dist/
+build/
+out/
+.DS_Store
+history_log.json
+design_directive.pdf
+*.spec
+bin/
+symphonia_decoder/target/
