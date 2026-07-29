@@ -10,7 +10,6 @@ function createWindow() {
     height: 850,
     backgroundColor: '#0A0E17',
     titleBarStyle: 'hiddenInset',
-    icon: path.join(__dirname, 'assets/icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -42,10 +41,21 @@ ipcMain.handle('select-file', async () => {
   return filePaths[0];
 });
 
+// Batch selection — pick multiple tracks; each is mastered uniquely.
+ipcMain.handle('select-files', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    properties: ['openFile', 'multiSelections'],
+    filters: [{ name: 'Audio', extensions: ['mp3', 'wav', 'm4a', 'flac'] }]
+  });
+  if (canceled) return [];
+  return filePaths;
+});
+
 ipcMain.handle('run-engine', async (event, args) => {
   return new Promise((resolve, reject) => {
     // Determine executable path
     const isPackaged = app.isPackaged;
+    const fs = require('fs');
     let executable;
     let spawnArgs;
 
@@ -56,16 +66,22 @@ ipcMain.handle('run-engine', async (event, args) => {
     } else {
       // In development, check if dist exists, otherwise use python3
       const distBinary = path.join(__dirname, 'dist', 'resonance-engine');
-      if (require('fs').existsSync(distBinary)) {
+      const venvPython = path.join(__dirname, 'venv', 'bin', 'python3');
+      const systemPython = 'python3';
+      
+      if (fs.existsSync(distBinary)) {
         executable = distBinary;
         spawnArgs = args;
+      } else if (fs.existsSync(venvPython)) {
+        executable = venvPython;
+        spawnArgs = [path.join(__dirname, 'engine_cli.py'), ...args];
       } else {
-        executable = 'python3';
+        executable = systemPython;
         spawnArgs = [path.join(__dirname, 'engine_cli.py'), ...args];
       }
     }
     
-    const child = spawn(executable, spawnArgs);
+    const child = spawn(executable, spawnArgs, { cwd: __dirname });
     
     let stdout = '';
     let stderr = '';
@@ -75,10 +91,11 @@ ipcMain.handle('run-engine', async (event, args) => {
     });
 
     child.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+    child.stderr.on('data', (data) => {
       const output = data.toString();
-      stdout += output;
-      
-      // Parse progress milestones
+      stderr += output;
       const lines = output.split('\n');
       for (const line of lines) {
         if (line.startsWith('PROGRESS:')) {
@@ -89,15 +106,22 @@ ipcMain.handle('run-engine', async (event, args) => {
         }
       }
     });
-    child.stderr.on('data', (data) => stderr += data.toString());
 
     child.on('close', (code) => {
+      const lastJsonLine = stdout.split('\n').filter(l => l.trim().startsWith('{')).pop() || '';
       if (code !== 0) {
-        const errorDetail = stderr || `Engine exited with code ${code}`;
-        reject(`Engine Error: ${errorDetail}`);
+        let errorMsg = `Engine exited with code ${code}`;
+        if (lastJsonLine) {
+          try {
+            const parsed = JSON.parse(lastJsonLine);
+            if (parsed.error) errorMsg = parsed.error;
+          } catch (_) {}
+        }
+        if (stderr.trim()) errorMsg += '\n' + stderr.trim();
+        reject(`Engine Error: ${errorMsg}`);
       } else {
         try {
-          resolve(JSON.parse(stdout));
+          resolve(JSON.parse(lastJsonLine));
         } catch (e) {
           reject(`Failed to parse engine output: ${stdout}\nError: ${e.message}`);
         }

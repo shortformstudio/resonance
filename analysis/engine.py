@@ -30,7 +30,7 @@ class AudioAnalysisEngine:
 
     def _load_audio(self, file_path):
         """Robustly loads audio using Symphonia (preferred), librosa, or FFmpeg fallback."""
-        print("PROGRESS: 10", flush=True)
+        print("PROGRESS: 10", file=sys.stderr, flush=True)
         
         # 1. Try Symphonia (Google's preferred Rust decoder)
         # Assuming binary is in project_root/bin/symphonia-decode
@@ -44,20 +44,20 @@ class AudioAnalysisEngine:
                 
                 # Use Symphonia to decode to a temporary WAV
                 subprocess.run([symphonia_bin, file_path, tmp_path], check=True, capture_output=True)
-                print("PROGRESS: 25", flush=True)
+                print("PROGRESS: 25", file=sys.stderr, flush=True)
                 data, rate = sf.read(tmp_path)
                 os.remove(tmp_path)
                 return data, rate
             except Exception as e:
-                print(f"Symphonia decoding failed, falling back: {e}")
+                print(f"Symphonia decoding failed, falling back: {e}", file=sys.stderr)
 
         # 2. Try librosa (which uses soundfile/audioread/ffmpeg)
         try:
             data, rate = librosa.load(file_path, sr=None, mono=False)
-            print("PROGRESS: 25", flush=True)
+            print("PROGRESS: 25", file=sys.stderr, flush=True)
             return data, rate
         except Exception as e:
-            print(f"Librosa loading failed: {e}")
+            print(f"Librosa loading failed: {e}", file=sys.stderr)
 
         # 3. Last resort: Direct FFmpeg call to WAV
         try:
@@ -67,7 +67,7 @@ class AudioAnalysisEngine:
                 tmp_path = tmp.name
             
             subprocess.run(["ffmpeg", "-i", file_path, "-y", tmp_path], check=True, capture_output=True)
-            print("PROGRESS: 25", flush=True)
+            print("PROGRESS: 25", file=sys.stderr, flush=True)
             data, rate = sf.read(tmp_path)
             os.remove(tmp_path)
             return data, rate
@@ -146,18 +146,18 @@ class AudioAnalysisEngine:
         }
 
     def run_full_analysis(self):
-        print("PROGRESS: 35", flush=True)
+        print("PROGRESS: 35", file=sys.stderr, flush=True)
         loudness = self.measure_loudness()
-        print("PROGRESS: 50", flush=True)
+        print("PROGRESS: 50", file=sys.stderr, flush=True)
         
         spectral = self.analyze_spectral_slope()
-        print("PROGRESS: 65", flush=True)
+        print("PROGRESS: 65", file=sys.stderr, flush=True)
         
         stereo = self.analyze_stereo_field()
-        print("PROGRESS: 75", flush=True)
+        print("PROGRESS: 75", file=sys.stderr, flush=True)
         
         waveform_data = self.generate_waveform_data()
-        print("PROGRESS: 90", flush=True)
+        print("PROGRESS: 90", file=sys.stderr, flush=True)
         
         # Calculate duration
         duration_sec = len(self.mono_data) / self.rate
@@ -171,7 +171,7 @@ class AudioAnalysisEngine:
         score = self.calculate_cohesion_score(loudness, spectral, stereo)
         suggestions_data = self.generate_suggestions(loudness, spectral, stereo)
         
-        print("PROGRESS: 100", flush=True)
+        print("PROGRESS: 100", file=sys.stderr, flush=True)
         
         report = {
             "title": os.path.basename(self.file_path),
@@ -186,7 +186,8 @@ class AudioAnalysisEngine:
             "status": self.get_status(score),
             "waveform": waveform_data,
             "suggestions": suggestions_data["suggestions"],
-            "perspective": suggestions_data["perspective"]
+            "perspective": suggestions_data["perspective"],
+            "chat": suggestions_data.get("chat", [])
         }
         return report
 
@@ -203,44 +204,140 @@ class AudioAnalysisEngine:
         return {"data": waveform[:points], "redlines": redlines[:points]}
 
     def generate_suggestions(self, loudness, spectral, stereo):
-        """Generates conversationally grounded engineering opinions and a cohesive narrative."""
-        suggestions = []
+        """Conversational mastering-buddy read of the track.
+
+        Voice: a friend who happens to be a world-class mastering engineer —
+        proactive, informative, concise, and chill. Every observation teaches a
+        little bit of *why* so the user levels up while the engines do the work.
+        Returns a `chat` list (ordered bubbles shown above the analysis) plus the
+        legacy `perspective`/`suggestions` fields for backward compatibility.
+        """
         lufs = loudness["integrated_lufs"]
         slope = spectral["spectral_slope"]
         corr = stereo["correlation"]
         tp = loudness["true_peak_db"]
 
-        # 1. Perspective Construction (The Cohesive Narrative)
-        perspective = "Looking at this track, "
-        if slope > 1.4: perspective += "we're leaning into a thick, dark warmth, but it's bordering on 'muddy'—we need to lift the veil and unmask the mid-highs. "
-        elif slope < 1.1: perspective += "it has a striking, surgical high-end brilliance, but it lacks the 'chest weight' to feel truly grounded. "
-        else: perspective += "it's sitting in a very professional spectral pocket. "
+        chat = []  # each: {tone, title, text}
 
-        if lufs < -16: perspective += "The signal is breathing deep with plenty of headroom, making it a prime candidate for a serious thermal push into the console stage. "
-        elif lufs > -9: perspective += "We're pushing the absolute limits of density here; I'm worried we're trading micro-dynamics for raw volume. "
-        else: perspective += "Loudness levels are targeted perfectly for contemporary streaming standards. "
+        # 1. Opening read — friendly, sets the vibe.
+        chat.append({
+            "tone": "greeting",
+            "title": "here's what i'm hearing",
+            "text": "gave your track a full listen-through with the meters up. "
+                    "quick honest read below — nothing's broken, this is just how we make it shine."
+        })
 
-        if corr < 0.6: perspective += "However, keep an eye on the side-signals—the phase correlation is dipping, which could cause center-image collapse. "
-        else: perspective += "The stereo integrity is solid, maintaining a focused and wide image."
-
-        # 2. Detailed Suggestions
-        if lufs < -16:
-            suggestions.append({"title": "ANALOG THERMAL PUSH", "text": "Signal is breathing with excessive headroom. Suggesting a boost into a soft-clipper to introduce even-order harmonics."})
-        elif lufs > -9:
-            suggestions.append({"title": "SPECTRAL DYNAMICS CAUTION", "text": "Loudness is in the 'war zone'. Recommend backing off the final limiter to let the transients breathe."})
-
-        if slope > 1.5:
-            suggestions.append({"title": "MUD DE-MASKING", "text": "Heavy accumulation in low-mids (300-500Hz). A surgical 2dB dip with a wide Q here will act like a lens flare reduction."})
+        # 2. Tonal balance (spectral slope) — teach the pink-noise target.
+        if slope > 1.4:
+            chat.append({
+                "tone": "insight",
+                "title": "tonal balance · a touch dark",
+                "text": f"your spectral slope is {slope} — there's lovely warmth down low, but the "
+                        "low-mids (250–500hz) are stacking up and fogging the detail. i'll gently "
+                        "dip that so the vocals and cymbals can breathe. think of it as wiping mist off glass."
+            })
         elif slope < 1.1:
-            suggestions.append({"title": "HF EXCITATION", "text": "Track feels 'dark'. A high-shelf at 12kHz would restore that expensive sheen without sounding brittle."})
+            chat.append({
+                "tone": "insight",
+                "title": "tonal balance · bright & crisp",
+                "text": f"slope's at {slope}, so you're riding a bright, detailed top end — sounds "
+                        "expensive, but it's a little thin in the chest. i'll add weight around 150–250hz "
+                        "so it feels grounded instead of glassy."
+            })
+        else:
+            chat.append({
+                "tone": "good",
+                "title": "tonal balance · dialed",
+                "text": f"slope's sitting at {slope}, right in the pro pink-noise pocket. honestly "
+                        "this is where you want to live — i'll preserve it and just tighten the edges."
+            })
 
-        if corr < 0.5:
-            suggestions.append({"title": "CORRELATION ALIGNMENT", "text": "Phase correlation is dipping. Tighten sub-200Hz region to mono and check for excessive widening effects."})
-        
+        # 3. Loudness — teach LUFS + streaming target.
+        if lufs < -16:
+            chat.append({
+                "tone": "insight",
+                "title": "loudness · lots of headroom",
+                "text": f"you're at {lufs} lufs — plenty of room before the ceiling. that's a gift: it "
+                        "means i can push into gentle analog saturation for warmth and glue before we ever "
+                        "hit a limiter. streaming targets around -14, so we've got a clean path up."
+            })
+        elif lufs > -9:
+            chat.append({
+                "tone": "caution",
+                "title": "loudness · running hot",
+                "text": f"heads up — you're at {lufs} lufs, which is loud. it'll be punchy, but we're "
+                        "trading away some of the micro-dynamics that make a track feel alive. i'll ease off "
+                        "the limiter a hair so the transients still hit. loud is easy; loud *and* open is the craft."
+            })
+        else:
+            chat.append({
+                "tone": "good",
+                "title": "loudness · on target",
+                "text": f"{lufs} lufs — basically perfect for streaming. we'll finalize right here and "
+                        "keep the dynamics intact."
+            })
+
+        # 4. Stereo image — teach phase/mono-compatibility.
+        if corr < 0.6:
+            chat.append({
+                "tone": "caution",
+                "title": "stereo image · watch the phase",
+                "text": f"correlation's dipping to {corr}. wide sounds great on headphones, but when a "
+                        "club or phone sums to mono, low-end can cancel and thin out. i'll mono the sub "
+                        "and re-focus the center so it stays big *and* solid everywhere."
+            })
+        else:
+            chat.append({
+                "tone": "good",
+                "title": "stereo image · wide and solid",
+                "text": f"correlation's at {corr} — your width is healthy and phase-coherent. it'll "
+                        "translate cleanly from earbuds to a big system."
+            })
+
+        # 5. True-peak safety — proactive codec heads-up.
         if tp > -0.5:
-            suggestions.append({"title": "INTER-SAMPLE SAFETY", "text": "True peaks are clipping reconstruction filters. Suggesting a ceiling of -1.0dB for codec integrity."})
+            chat.append({
+                "tone": "caution",
+                "title": "true peaks · codec safety",
+                "text": f"peaks are grazing {tp} db. once this gets encoded to mp3/aac, inter-sample "
+                        "peaks can clip past 0. i'll set a -1.0 db ceiling so it survives streaming intact."
+            })
 
-        return {"suggestions": suggestions, "perspective": perspective}
+        # 6. Path forward — proactive recommendation of which mode to try.
+        if lufs < -16 or slope > 1.4:
+            rec = ("i'd start with **modern master** — it leans into harmonic density and glue, "
+                   "which is exactly what this track's asking for. want a warmer, more open take, "
+                   "run **acoustic clear** right after and a/b them.")
+        elif corr < 0.6 or slope < 1.1:
+            rec = ("i'd reach for **acoustic clear** first — it keeps things phase-coherent and airy, "
+                   "which suits this material. if you want more weight and loudness, try **modern master** and compare.")
+        else:
+            rec = ("this one's balanced, so it's dealer's choice: **modern master** for a louder, denser "
+                   "print, **acoustic clear** for a transparent finish. hit master and we'll hear it.")
+        chat.append({
+            "tone": "plan",
+            "title": "my move",
+            "text": rec + " either way, i'll print an ORIGINAL_REFERENCE next to it so you can a/b instantly."
+        })
+
+        # --- Legacy fields (kept so older UI paths still work) ---
+        perspective = " ".join(b["text"] for b in chat if b["tone"] in ("insight", "good", "caution"))
+
+        suggestions = []
+        if lufs < -16:
+            suggestions.append({"title": "ANALOG THERMAL PUSH", "text": "Lots of headroom — boosting into a soft-clipper for even-order harmonic warmth."})
+        elif lufs > -9:
+            suggestions.append({"title": "SPECTRAL DYNAMICS CAUTION", "text": "Loudness is hot — backing off the final limiter to let transients breathe."})
+        if slope > 1.5:
+            suggestions.append({"title": "MUD DE-MASKING", "text": "Low-mid buildup (300–500Hz) — a wide, gentle 2dB dip clears the fog."})
+        elif slope < 1.1:
+            suggestions.append({"title": "HF EXCITATION", "text": "Feels dark — a 12kHz high-shelf restores sheen without brittleness."})
+        if corr < 0.5:
+            suggestions.append({"title": "CORRELATION ALIGNMENT", "text": "Phase dipping — mono the sub-200Hz and check widening."})
+        if tp > -0.5:
+            suggestions.append({"title": "INTER-SAMPLE SAFETY", "text": "True peaks clipping — setting a -1.0dB ceiling for codec integrity."})
+
+        return {"suggestions": suggestions, "perspective": perspective, "chat": chat}
 
     def calculate_cohesion_score(self, loudness, spectral, stereo):
         """Mathematical weighted score based on mastering standards."""

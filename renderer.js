@@ -17,6 +17,14 @@ const metaVolume = document.getElementById('meta-volume');
 const perspectiveText = document.getElementById('perspective-text');
 const suggestionsArea = document.getElementById('suggestions-area');
 
+// Chat + batch elements
+const chatStream = document.getElementById('chat-stream');
+const assistantStatus = document.getElementById('assistant-status');
+const batchQueueEl = document.getElementById('batch-queue');
+const batchListEl = document.getElementById('batch-list');
+const batchProgressLabel = document.getElementById('batch-progress-label');
+const btnBatchMaster = document.getElementById('btn-batch-master');
+
 // DNA Stats Elements
 const dnaLufs = document.getElementById('dna-lufs');
 const dnaSlope = document.getElementById('dna-slope');
@@ -29,6 +37,57 @@ const proposedChain = document.getElementById('proposed-chain');
 let currentFilePath = null;
 let currentAnalysis = null;
 let masterHistory = [];
+
+// Batch state — each entry is a track with its own analysis + master output.
+let batchTracks = [];   // { path, name, status, analysis, outputPath }
+let isBatchRunning = false;
+
+// --- Mastering Assistant chat (all advice appears here, above the analysis) ---
+const CHAT_TONE_ICON = {
+    greeting: '◉', insight: '✳', good: '✓', caution: '⚠', plan: '➤', working: '⟳', done: '✓',
+};
+
+function setAssistantStatus(text) {
+    if (assistantStatus) assistantStatus.textContent = text;
+}
+
+/** Append one chat bubble. Markdown-lite: **bold** becomes <strong>. */
+function addChatBubble(text, tone = 'insight', title = null) {
+    if (!chatStream) return;
+    const bubble = document.createElement('div');
+    bubble.className = `chat-bubble ${tone}`;
+    const safe = escapeText(text).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    const icon = CHAT_TONE_ICON[tone] || '✳';
+    bubble.innerHTML = `
+        ${title ? `<div class="bubble-title"><span class="bubble-icon">${icon}</span>${escapeText(title)}</div>` : ''}
+        <p>${safe}</p>`;
+    chatStream.appendChild(bubble);
+    chatStream.scrollTop = chatStream.scrollHeight;
+    return bubble;
+}
+
+function clearChat() {
+    if (chatStream) chatStream.innerHTML = '';
+}
+
+function escapeText(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/** Render the assistant's conversational read from an analysis result. */
+function renderAssistantChat(analysis, trackName) {
+    clearChat();
+    if (trackName) addChatBubble(`on it — reading **${trackName}** now.`, 'greeting');
+    const chat = (analysis && analysis.chat) || [];
+    if (chat.length) {
+        chat.forEach(b => addChatBubble(b.text, b.tone || 'insight', b.title));
+    } else if (analysis && analysis.perspective) {
+        // Fallback for older engine output.
+        addChatBubble(analysis.perspective, 'insight', "here's the read");
+    }
+    setAssistantStatus('analysis ready · your call');
+}
 
 // --- History Logic ---
 function updateHistoryUI() {
@@ -207,35 +266,44 @@ async function runAnalysis() {
 
         currentAnalysis = result;
         perspectiveText.textContent = result.perspective;
-        
-        if (result.metrics) {
-            dnaLufs.textContent = `${result.metrics.integrated_lufs} LUFS`;
-            dnaSlope.textContent = result.metrics.spectral_slope;
-            dnaWidth.textContent = result.metrics.correlation;
-            
-            generateEngineerComments(result.metrics);
-            updateProposedCompensation();
 
-            lufsEl.textContent = result.metrics.integrated_lufs;
-            spectralEl.textContent = result.metrics.spectral_slope;
-            widthEl.textContent = result.metrics.correlation;
-            
-            metaTitle.textContent = result.title;
-            metaDuration.textContent = result.duration;
-            metaFormat.textContent = result.format;
-            metaVolume.textContent = `${result.metrics.true_peak_db} dB`;
-            trackMetadata.classList.remove('hidden');
-        }
+        // Route the assistant's full read into the chat bubbles above analysis.
+        renderAssistantChat(result, result.title);
 
-        if (result.waveform && result.waveform.data) {
-            updateWaveform(result.waveform);
-        }
+        paintAnalysis(result);
 
         addLog('DNA mapped. Hybrid compensation plan initialized.');
         btnExecute.disabled = false;
     } catch (err) {
         console.error('Analysis Error:', err);
         addLog(`CRITICAL: ${err.message}`);
+        addChatBubble(`hmm, i couldn't read that one — ${err.message}. try a wav or flac and i'll take another pass.`, 'caution', 'hit a snag');
+    }
+}
+
+/** Paint metrics, audit comments, metadata, and waveform from an analysis result. */
+function paintAnalysis(result) {
+    if (result.metrics) {
+        dnaLufs.textContent = `${result.metrics.integrated_lufs} LUFS`;
+        dnaSlope.textContent = result.metrics.spectral_slope;
+        dnaWidth.textContent = result.metrics.correlation;
+
+        generateEngineerComments(result.metrics);
+        updateProposedCompensation();
+
+        lufsEl.textContent = result.metrics.integrated_lufs;
+        spectralEl.textContent = result.metrics.spectral_slope;
+        widthEl.textContent = result.metrics.correlation;
+
+        metaTitle.textContent = result.title;
+        metaDuration.textContent = result.duration;
+        metaFormat.textContent = result.format;
+        metaVolume.textContent = `${result.metrics.true_peak_db} dB`;
+        trackMetadata.classList.remove('hidden');
+    }
+
+    if (result.waveform && result.waveform.data) {
+        updateWaveform(result.waveform);
     }
 }
 
@@ -263,14 +331,165 @@ dropZone.addEventListener('dragleave', () => { dropZone.classList.remove('drag-o
 dropZone.addEventListener('drop', async (e) => {
     e.preventDefault();
     dropZone.classList.remove('drag-over');
-    const file = e.dataTransfer.files[0];
-    if (file && file.path) handleFileSelection(file.path);
+    const files = Array.from(e.dataTransfer.files).filter(f => f.path);
+    if (files.length === 0) return;
+    if (files.length === 1) {
+        exitBatchMode();
+        handleFileSelection(files[0].path);
+    } else {
+        loadBatch(files.map(f => f.path));
+    }
 });
 
 btnAudioFile.addEventListener('click', async () => {
-    const filePath = await window.api.selectFile();
-    if (filePath) handleFileSelection(filePath);
+    const filePaths = await window.api.selectFiles();
+    if (!filePaths || filePaths.length === 0) return;
+    if (filePaths.length === 1) {
+        exitBatchMode();
+        handleFileSelection(filePaths[0]);
+    } else {
+        loadBatch(filePaths);
+    }
 });
+
+// ================= BATCH MODE =================
+// Each track keeps its own analysis, so every master is tailored to that track.
+
+function baseNameOf(p) { return p.split(/[\\/]/).pop(); }
+
+function loadBatch(paths) {
+    batchTracks = paths.map(p => ({
+        path: p,
+        name: baseNameOf(p),
+        status: 'queued',      // queued | analyzing | ready | mastering | done | error
+        analysis: null,
+        outputPath: null,
+    }));
+    batchQueueEl.classList.remove('hidden');
+    btnBatchMaster.classList.remove('hidden');
+    btnExecute.classList.add('hidden');
+    renderBatchList();
+    addLog(`Batch loaded: ${batchTracks.length} tracks.`);
+    clearChat();
+    addChatBubble(
+        `loaded **${batchTracks.length} tracks**. i'll analyze each one individually and give every track its own custom master — no blanket presets. hit **master all** when you're ready, or tap any track to see its read.`,
+        'greeting', 'batch ready'
+    );
+    setAssistantStatus(`${batchTracks.length} tracks queued`);
+    // Pre-analyze all tracks so the user sees per-track reads before committing.
+    analyzeBatchSequentially();
+}
+
+function exitBatchMode() {
+    batchTracks = [];
+    batchQueueEl.classList.add('hidden');
+    btnBatchMaster.classList.add('hidden');
+    btnExecute.classList.remove('hidden');
+}
+
+const BATCH_STATUS_LABEL = {
+    queued: 'queued', analyzing: 'analyzing…', ready: 'ready',
+    mastering: 'mastering…', done: 'done ✓', error: 'error',
+};
+
+function renderBatchList() {
+    if (!batchListEl) return;
+    const doneCount = batchTracks.filter(t => t.status === 'done').length;
+    batchProgressLabel.textContent = `${doneCount} / ${batchTracks.length}`;
+    batchListEl.innerHTML = '';
+    batchTracks.forEach((track, index) => {
+        const row = document.createElement('div');
+        row.className = `batch-item ${track.status}`;
+        const metricPreview = track.analysis
+            ? `${track.analysis.metrics.integrated_lufs} LUFS · slope ${track.analysis.metrics.spectral_slope}`
+            : '—';
+        row.innerHTML = `
+            <span class="batch-item-name" title="${escapeText(track.path)}">${escapeText(track.name)}</span>
+            <span class="batch-item-metrics">${metricPreview}</span>
+            <span class="batch-item-status ${track.status}">${BATCH_STATUS_LABEL[track.status] || track.status}</span>`;
+        row.onclick = () => {
+            if (track.analysis) showTrackRead(track);
+            if (track.outputPath && track.status === 'done') window.api.showItemInFolder(track.outputPath);
+        };
+        batchListEl.appendChild(row);
+    });
+}
+
+function showTrackRead(track) {
+    currentAnalysis = track.analysis;
+    currentFilePath = track.path;
+    // Repaint metrics + audit for the tapped track.
+    paintAnalysis(track.analysis);
+    renderAssistantChat(track.analysis, track.name);
+}
+
+async function analyzeBatchSequentially() {
+    for (const track of batchTracks) {
+        if (track.analysis) continue;
+        track.status = 'analyzing';
+        renderBatchList();
+        setAssistantStatus(`analyzing ${track.name}…`);
+        try {
+            const result = await window.api.runEngine(['analyze', track.path]);
+            if (result.error) throw new Error(result.error);
+            track.analysis = result;
+            track.status = 'ready';
+        } catch (err) {
+            track.status = 'error';
+            addLog(`Analysis failed for ${track.name}: ${err.message}`);
+        }
+        renderBatchList();
+    }
+    const readyCount = batchTracks.filter(t => t.status === 'ready').length;
+    setAssistantStatus(`${readyCount} tracks analyzed`);
+    addChatBubble(
+        `done analyzing — each track's read is saved. tap any one to see its details. when you hit **master all**, i'll process them one by one, each with its own tailored chain.`,
+        'plan', 'all analyzed'
+    );
+    // Show the first track's read by default.
+    const first = batchTracks.find(t => t.analysis);
+    if (first) showTrackRead(first);
+}
+
+async function runBatchMaster() {
+    if (isBatchRunning) return;
+    isBatchRunning = true;
+    btnBatchMaster.disabled = true;
+    addChatBubble(`starting the batch. i'll tailor each master to its own analysis — the loud ones get eased off, the dark ones get lifted. sit back.`, 'working', 'mastering all');
+
+    for (const track of batchTracks) {
+        if (!track.analysis) continue;
+        track.status = 'mastering';
+        renderBatchList();
+        setAssistantStatus(`mastering ${track.name}…`);
+        try {
+            const baseName = track.name.replace(/\.[^/.]+$/, '');
+            // Engine forces export into ~/Documents/Sound; we only supply the name.
+            const outputPath = `UNIFIED_MASTER_${baseName}.wav`;
+            const metricsJson = JSON.stringify(track.analysis.metrics);
+            const res = await window.api.runEngine(['master', track.path, outputPath, metricsJson]);
+            track.outputPath = (res && res.output_path) || outputPath;
+            track.abPath = res && res.ab_sample_path;
+            track.status = 'done';
+            addToHistory(`MASTER: ${baseName}`, track.outputPath);
+        } catch (err) {
+            track.status = 'error';
+            addLog(`Master failed for ${track.name}: ${err.message}`);
+        }
+        renderBatchList();
+    }
+
+    isBatchRunning = false;
+    btnBatchMaster.disabled = false;
+    const doneCount = batchTracks.filter(t => t.status === 'done').length;
+    setAssistantStatus(`${doneCount} tracks mastered`);
+    addChatBubble(
+        `batch complete — **${doneCount} of ${batchTracks.length}** mastered, each with its own treatment. everything's in your **Sound** folder, and each track got a 30-second before/after clip in **Sound › AB sampling** (flips every 5s). tap any track to reveal it. nice work.`,
+        'done', 'all done'
+    );
+}
+
+if (btnBatchMaster) btnBatchMaster.addEventListener('click', runBatchMaster);
 
 btnExecute.addEventListener('click', async () => {
     if (!currentAnalysis) return;
@@ -281,17 +500,22 @@ btnExecute.addEventListener('click', async () => {
     try {
         const fileName = currentFilePath.split(/[\\/]/).pop();
         const baseName = fileName.replace(/\.[^/.]+$/, "");
-        const outputDir = currentFilePath.substring(0, currentFilePath.lastIndexOf(currentFilePath.includes('/') ? '/' : '\\') + 1);
-        
-        const outputPath = `${outputDir}UNIFIED_MASTER_${baseName}.wav`;
+        // The engine forces all exports into ~/Documents/Sound; we just name the file.
+        const outputPath = `UNIFIED_MASTER_${baseName}.wav`;
         const metricsJson = JSON.stringify(currentAnalysis.metrics);
-        
+
         addLog(`Applying Hybrid Analog Compensation...`);
-        await window.api.runEngine(['master', currentFilePath, outputPath, metricsJson]);
-        
-        addToHistory(`MASTER: ${baseName}`, outputPath);
-        addLog(`SEQUENCE COMPLETE. Disclosure revealed.`);
-        window.api.showItemInFolder(outputPath);
+        addChatBubble(`printing your master now — tailored to this track's read. one sec.`, 'working', 'mastering');
+        const res = await window.api.runEngine(['master', currentFilePath, outputPath, metricsJson]);
+
+        const finalPath = (res && res.output_path) || outputPath;
+        addToHistory(`MASTER: ${baseName}`, finalPath);
+        addLog(`SEQUENCE COMPLETE. Exported to Documents/Sound.`);
+        addChatBubble(`done — master's in your **Sound** folder, with an original reference beside it so you can a/b. trust your ears over the meters.`, 'done', 'ready to hear');
+        if (res && res.ab_sample_path) {
+            addChatBubble(`also dropped a **30-second a/b sample** in **Sound › AB sampling** — it flips between before and after every 5 seconds on the same passage, so the difference is easy to hear in context.`, 'plan', 'a/b sample ready');
+        }
+        window.api.showItemInFolder(finalPath);
         
     } catch (err) {
         addLog(`EXECUTION ERROR: ${err.message}`);
