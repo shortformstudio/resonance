@@ -354,6 +354,7 @@ struct StatsPanel: View {
             if let analysis = state.currentAnalysis {
                 AuditPanel()
                 MetricsGrid(metrics: analysis.metrics)
+                DynamicsStrip(dynamics: analysis.dynamics)
                 WaveformView(waveform: analysis.waveform)
                     .frame(height: 90)
                     .glass()
@@ -540,10 +541,15 @@ struct AuditPanel: View {
                     VStack(alignment: .leading, spacing: 8) {
                         SectionHeader("TANDEM COMPENSATION PLAN")
                             .infoHover(Info.compensationPlan)
-                        ForEach(modeChain, id: \.0) { name, detail, info in
-                            AuditItem(label: name, value: detail, comment: nil)
-                                .infoHover(info)
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(modeChain, id: \.0) { name, detail, info in
+                                    AuditItem(label: name, value: detail, comment: nil)
+                                        .infoHover(info)
+                                }
+                            }
                         }
+                        .frame(maxHeight: 260)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -614,13 +620,17 @@ struct MetricsGrid: View {
     let metrics: Metrics
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 10) {
             MetricCard(title: "LOUDNESS", value: String(format: "%.2f", metrics.integratedLufs),
                        help: "LOUDNESS: Measured in LUFS. Target: -14 LUFS.", info: Info.loudness)
             MetricCard(title: "SPECTRAL", value: String(format: "%.3f", metrics.spectralSlope),
                        help: "SPECTRAL: Ideal slope ~1.3 (Pink Noise).", info: Info.spectral)
             MetricCard(title: "WIDTH", value: String(format: "%.3f", metrics.correlation),
                        help: "WIDTH: Correlation +1.0 is mono.", info: Info.width)
+            MetricCard(title: "RANGE", value: String(format: "%.1f LU", metrics.lra),
+                       help: "RANGE: Loudness range across the track. Under 7 is tight and modern; over 9 breathes wide and may need section riding.", info: Info.dynamicsRange)
+            MetricCard(title: "CREST", value: String(format: "%.1f dB", metrics.crestFactorDb),
+                       help: "CREST: Peak-to-average ratio. High crest means punchy transients; low crest means dense and loud.", info: Info.crestFactor)
         }
     }
 }
@@ -646,6 +656,50 @@ struct MetricCard: View {
         .glass()
         .help(help)
         .infoHover(info)
+    }
+}
+
+struct DynamicsStrip: View {
+    let dynamics: DynamicsReport
+
+    private var peak: Double { dynamics.sections.map(\.lufs).max() ?? 0 }
+    private var floor: Double { dynamics.sections.map(\.lufs).min() ?? 0 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text("SECTION DYNAMICS")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .tracking(1.5)
+                    .foregroundStyle(Theme.textSecondary)
+                Spacer()
+                Text(String(format: "spread %.1f dB · LRA %.1f LU", dynamics.sectionSpreadDb, dynamics.lra))
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(Theme.accent)
+            }
+            HStack(alignment: .bottom, spacing: 4) {
+                ForEach(dynamics.sections.indices, id: \.self) { i in
+                    let s = dynamics.sections[i]
+                    let span = max(peak - floor, 0.5)
+                    let h = max(6, CGFloat((s.lufs - floor) / span) * 44)
+                    VStack(spacing: 2) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Theme.accent.opacity(0.35 + 0.55 * Double(h / 50)))
+                            .frame(height: h)
+                        Text(String(format: "%.0f", s.lufs))
+                            .font(.system(size: 7, design: .monospaced))
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .help(String(format: "section %d · %.0fs · %.1f LUFS · LRA %.1f · crest %.1f dB",
+                                 i + 1, s.startSec, s.lufs, s.lra, s.crestDb))
+                }
+            }
+            .frame(height: 64)
+        }
+        .padding(10)
+        .glass()
+        .infoHover(Info.sectionTrim)
     }
 }
 

@@ -169,10 +169,16 @@ class AudioAnalysisEngine:
         ext = os.path.splitext(self.file_path)[1][1:].upper()
         
         score = self.calculate_cohesion_score(loudness, spectral, stereo)
-        suggestions_data = self.generate_suggestions(loudness, spectral, stereo)
-        
+
+        # Dynamics metering first — the chat read reacts to it.
+        from mastering.dynamics import dynamics_report
+        data2d = self.data if len(self.data.shape) > 1 else self.data[:, None]
+        dyn = dynamics_report(data2d, self.rate)
+
+        suggestions_data = self.generate_suggestions(loudness, spectral, stereo, dyn)
+
         print("PROGRESS: 100", file=sys.stderr, flush=True)
-        
+
         report = {
             "title": os.path.basename(self.file_path),
             "format": ext,
@@ -180,14 +186,18 @@ class AudioAnalysisEngine:
             "metrics": {
                 **loudness,
                 **spectral,
-                **stereo
+                **stereo,
+                "lra": dyn["lra"],
+                "crest_db": dyn["crest_db"],
+                "section_spread_db": dyn["section_spread_db"],
             },
             "cohesion_score": score,
             "status": self.get_status(score),
             "waveform": waveform_data,
             "suggestions": suggestions_data["suggestions"],
             "perspective": suggestions_data["perspective"],
-            "chat": suggestions_data.get("chat", [])
+            "chat": suggestions_data.get("chat", []),
+            "dynamics": dyn,
         }
         return report
 
@@ -203,7 +213,7 @@ class AudioAnalysisEngine:
             redlines.append(1 if peak > 0.99 else 0)
         return {"data": waveform[:points], "redlines": redlines[:points]}
 
-    def generate_suggestions(self, loudness, spectral, stereo):
+    def generate_suggestions(self, loudness, spectral, stereo, dyn=None):
         """Conversational mastering-buddy read of the track.
 
         Voice: a friend who happens to be a world-class mastering engineer —
@@ -301,6 +311,23 @@ class AudioAnalysisEngine:
                 "title": "true peaks · codec safety",
                 "text": f"peaks are grazing {tp} db. once this gets encoded to mp3/aac, inter-sample "
                         "peaks can clip past 0. i'll set a -1.0 db ceiling so it survives streaming intact."
+            })
+
+        # 5b. Dynamics consistency — section spread + loudness range.
+        dyn = dyn or {}
+        spread = float(dyn.get("section_spread_db", 0))
+        lra = float(dyn.get("lra", 0))
+        if spread > 3 or lra > 9:
+            chat.append({
+                "tone": "insight",
+                "title": "dynamics · uneven sections",
+                "text": f"this one's breathing unevenly — sections swing {spread} db with a loudness range of {lra} lu. i'm riding the sections toward each other and letting the multiband glue work per-band, so the verse and chorus finish at the same weight."
+            })
+        else:
+            chat.append({
+                "tone": "good",
+                "title": "dynamics · holding steady",
+                "text": f"dynamics hold steady across sections ({spread} db spread, {lra} lu range) — the glue just has to polish, not rescue. transients stay intact."
             })
 
         # 6. Path forward — proactive recommendation of which mode to try.

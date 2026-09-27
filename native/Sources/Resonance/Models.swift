@@ -89,6 +89,7 @@ enum MasteringMode: String, CaseIterable {
 
     /// Per-mode processing chain detail for the current read, matching DSP thresholds.
     func chainPreview(metrics m: Metrics) -> [(name: String, detail: String, info: HoverInfo)] {
+        let cfg = ModeDynamics.forMode(self)
         let mud = String(format: "Mud Cut @ %.0fHz", m.mudCenterHz)
         let hpf: String
         let heat: String
@@ -133,12 +134,18 @@ enum MasteringMode: String, CaseIterable {
             spatial = m.correlation > 0.7 ? "M/S Expansion" : (m.correlation < 0.6 ? "Sub Mono-Fold" : "Image Hold")
             glue = m.integratedLufs > -12 ? "1.2:1 Soft Knee" : "1.5:1 Soft Knee"
         }
+        let avgRatio = cfg.mbRatios.reduce(0, +) / Double(max(cfg.mbRatios.count, 1))
         return [
             ("Sub-Sonic Control", hpf, Info.subSonic),
+            ("Transient Detail", String(format: "Attack %+.2f · Sustain %+.2f", cfg.transientAttack, cfg.transientSustain), Info.transientDetail),
             ("Organic Heat", heat, Info.organicHeat),
             ("Spectral Balancing", spectral, Info.spectralBalancing),
+            ("Resonance Tamer", "2–8kHz · \(Int(cfg.suppressDepth * 100))%", Info.resonanceTamer),
+            ("Multiband Dynamics", String(format: "4 bands · ~%.1f:1", avgRatio), Info.multiband),
             ("Spatial Width", spatial, Info.spatialWidth),
             ("Program Glue", glue, Info.programGlue),
+            ("Upward Detail", "parallel mix \(Int(cfg.upwardMix * 100))%", Info.upwardDetail),
+            ("Section Trim", String(format: "±%.1f dB ride", cfg.sectionTrimDb), Info.sectionTrim),
             ("Final Offset", "→ \(String(format: "%.1f", targetLufs)) LUFS exact", Info.finalOffset)
         ]
     }
@@ -153,6 +160,9 @@ struct Metrics {
     var stereoWidth: Double
     var mudCenterHz: Double = 420.0
     var mudProminenceDb: Double = 0.0
+    var lra: Double = 0.0
+    var crestFactorDb: Double = 0.0
+    var sectionSpreadDb: Double = 0.0
 }
 
 enum ChatTone: String {
@@ -199,6 +209,7 @@ struct AnalysisResult {
     var suggestions: [Suggestion]
     var perspective: String
     var chat: [ChatBubble]
+    var dynamics: DynamicsReport = DynamicsReport(lra: 0, crestFactorDb: 0, sectionSpreadDb: 0, sections: [], histogram: [])
 }
 
 struct MasterResult {

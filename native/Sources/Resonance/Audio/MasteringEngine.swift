@@ -180,18 +180,18 @@ struct MasteringEngine {
 
     func render(mode: MasteringMode, input: URL, output: URL, metrics: Metrics) throws -> URL {
         switch mode {
-        case .core:  return try applyCompensation(input: input, output: output, metrics: metrics)
-        case .pure:  return try clearRender(input: input, output: output, metrics: metrics)
-        case .heat:  return try v1LegacyRender(input: input, output: output, metrics: metrics)
-        case .club:  return try clubRender(input: input, output: output, metrics: metrics)
-        case .ivory: return try ivoryRender(input: input, output: output, metrics: metrics)
-        case .vox:   return try voxRender(input: input, output: output, metrics: metrics)
+        case .core:  return try applyCompensation(input: input, output: output, metrics: metrics, mode: mode)
+        case .pure:  return try clearRender(input: input, output: output, metrics: metrics, mode: mode)
+        case .heat:  return try v1LegacyRender(input: input, output: output, metrics: metrics, mode: mode)
+        case .club:  return try clubRender(input: input, output: output, metrics: metrics, mode: mode)
+        case .ivory: return try ivoryRender(input: input, output: output, metrics: metrics, mode: mode)
+        case .vox:   return try voxRender(input: input, output: output, metrics: metrics, mode: mode)
         }
     }
 
     // MARK: main render (Resonance v2)
 
-    func applyCompensation(input: URL, output: URL, metrics: Metrics) throws -> URL {
+    func applyCompensation(input: URL, output: URL, metrics: Metrics, mode: MasteringMode = .core) throws -> URL {
         let buffer = try AudioLoader.load(url: input)
         let fs = buffer.sampleRate
         let channels = buffer.channelCount
@@ -231,7 +231,7 @@ struct MasteringEngine {
         var comp = GlueCompressor(thresholdDb: -22, ratio: compRatio,
                                   attackMs: 50, releaseMs: 200, fs: fs)
 
-        var work = buffer.channels
+        var work = DynamicsChain.applyTransient(channels: buffer.channels, fs: fs, metrics: metrics, mode: mode)
         for i in 0..<frames {
             for c in 0..<channels {
                 work[c][i] = hpf[c].process(work[c][i])
@@ -267,6 +267,10 @@ struct MasteringEngine {
 
         // Stages 6 + 7: closed-loop level into the true-peak brickwall.
         // Measure, trim, limit, re-measure — lands on target within 0.05 LU.
+        // Dynamics stages first: tamer → multiband → upward → section trim.
+        work = DynamicsChain.process(work: work, fs: fs, metrics: metrics, mode: mode, targetLufs: targetLufs)
+        var clipper = SoftClipper(driveDb: ModeDynamics.forMode(mode).clipDriveDb,
+                                  ceilingDb: ModeDynamics.forMode(mode).clipCeilingDb)
         let preLufs = Loudness.integratedLufs(buffer: AudioBuffer(channels: work, sampleRate: fs))
         var trimDb = targetLufs - preLufs
         var out = work
@@ -276,6 +280,11 @@ struct MasteringEngine {
             for c in 0..<channels {
                 var scale = g
                 vDSP_vsmulD(out[c], 1, &scale, &out[c], 1, vDSP_Length(frames))
+            }
+            if !clipper.bypassed {
+                for c in 0..<channels {
+                    for i in 0..<frames { out[c][i] = clipper.process(out[c][i]) }
+                }
             }
             TruePeakLimiter.limit(&out, fs: fs)
             let measured = Loudness.integratedLufs(buffer: AudioBuffer(channels: out, sampleRate: fs))
@@ -290,7 +299,7 @@ struct MasteringEngine {
 
     // MARK: CLEAR mode (acoustic clarity)
 
-    func clearRender(input: URL, output: URL, metrics: Metrics) throws -> URL {
+    func clearRender(input: URL, output: URL, metrics: Metrics, mode: MasteringMode = .core) throws -> URL {
         let buffer = try AudioLoader.load(url: input)
         let fs = buffer.sampleRate
         let channels = buffer.channelCount
@@ -313,7 +322,7 @@ struct MasteringEngine {
         var comp = GlueCompressor(thresholdDb: -18, ratio: 1.15, kneeDb: 6,
                                   attackMs: 60, releaseMs: 250, fs: fs)
 
-        var work = buffer.channels
+        var work = DynamicsChain.applyTransient(channels: buffer.channels, fs: fs, metrics: metrics, mode: mode)
         for i in 0..<frames {
             var meanSquare = 0.0
             for c in 0..<channels {
@@ -330,7 +339,11 @@ struct MasteringEngine {
             for c in 0..<channels { work[c][i] *= g }
         }
 
-        // Closed-loop LUFS + true-peak limiter (same finishing stage as v2)
+        // Closed-loop LUFS + true-peak limiter (same finishing stage as v2).
+        // Dynamics stages first: tamer → multiband → upward → section trim.
+        work = DynamicsChain.process(work: work, fs: fs, metrics: metrics, mode: mode, targetLufs: targetLufs)
+        var clipper = SoftClipper(driveDb: ModeDynamics.forMode(mode).clipDriveDb,
+                                  ceilingDb: ModeDynamics.forMode(mode).clipCeilingDb)
         let preLufs = Loudness.integratedLufs(buffer: AudioBuffer(channels: work, sampleRate: fs))
         var trimDb = targetLufs - preLufs
         var out = work
@@ -340,6 +353,11 @@ struct MasteringEngine {
             for c in 0..<channels {
                 var scale = g
                 vDSP_vsmulD(out[c], 1, &scale, &out[c], 1, vDSP_Length(frames))
+            }
+            if !clipper.bypassed {
+                for c in 0..<channels {
+                    for i in 0..<frames { out[c][i] = clipper.process(out[c][i]) }
+                }
             }
             TruePeakLimiter.limit(&out, fs: fs)
             let measured = Loudness.integratedLufs(buffer: AudioBuffer(channels: out, sampleRate: fs))
@@ -354,7 +372,7 @@ struct MasteringEngine {
 
     // MARK: Unified Hybrid v1 (original alpha engine, ported from commit 6bb41b1)
 
-    func v1LegacyRender(input: URL, output: URL, metrics: Metrics) throws -> URL {
+    func v1LegacyRender(input: URL, output: URL, metrics: Metrics, mode: MasteringMode = .core) throws -> URL {
         let buffer = try AudioLoader.load(url: input)
         let fs = buffer.sampleRate
         let channels = buffer.channelCount
@@ -390,7 +408,7 @@ struct MasteringEngine {
         var comp = GlueCompressor(thresholdDb: -22, ratio: compRatio,
                                   attackMs: 50, releaseMs: 200, fs: fs)
 
-        var work = buffer.channels
+        var work = DynamicsChain.applyTransient(channels: buffer.channels, fs: fs, metrics: metrics, mode: mode)
         for i in 0..<frames {
             for c in 0..<channels {
                 work[c][i] = hpf[c].process(work[c][i])
@@ -419,7 +437,11 @@ struct MasteringEngine {
             for c in 0..<channels { work[c][i] *= g }
         }
 
-        // Simple gain trim + true-peak limiter (v1: no closed-loop re-measurement)
+        // Simple gain trim + soft clipper + true-peak limiter
+        // (v1: no closed-loop re-measurement). Dynamics stages first.
+        work = DynamicsChain.process(work: work, fs: fs, metrics: metrics, mode: mode, targetLufs: targetLufs)
+        var clipper = SoftClipper(driveDb: ModeDynamics.forMode(mode).clipDriveDb,
+                                  ceilingDb: ModeDynamics.forMode(mode).clipCeilingDb)
         let preLufs = Loudness.integratedLufs(buffer: AudioBuffer(channels: work, sampleRate: fs))
         let trimDb = targetLufs - preLufs
         let g = pow(10, trimDb / 20)
@@ -427,6 +449,11 @@ struct MasteringEngine {
         for c in 0..<channels {
             var scale = g
             vDSP_vsmulD(out[c], 1, &scale, &out[c], 1, vDSP_Length(frames))
+        }
+        if !clipper.bypassed {
+            for c in 0..<channels {
+                for i in 0..<frames { out[c][i] = clipper.process(out[c][i]) }
+            }
         }
         TruePeakLimiter.limit(&out, fs: fs)
 
@@ -438,9 +465,11 @@ struct MasteringEngine {
 
     /// Lands the work buffer exactly on target, then writes it. Used by the
     /// newer renders; the original three keep their inline finishing stages.
-    private func closedLoopFinish(work: [[Double]], fs: Double, target: Double, output: URL) throws -> URL {
+    private func closedLoopFinish(work: [[Double]], fs: Double, target: Double, output: URL, mode: MasteringMode) throws -> URL {
         let channels = work.count
         let frames = work.first?.count ?? 0
+        var clipper = SoftClipper(driveDb: ModeDynamics.forMode(mode).clipDriveDb,
+                                  ceilingDb: ModeDynamics.forMode(mode).clipCeilingDb)
         let preLufs = Loudness.integratedLufs(buffer: AudioBuffer(channels: work, sampleRate: fs))
         var trimDb = target - preLufs
         var out = work
@@ -450,6 +479,11 @@ struct MasteringEngine {
             for c in 0..<channels {
                 var scale = g
                 vDSP_vsmulD(out[c], 1, &scale, &out[c], 1, vDSP_Length(frames))
+            }
+            if !clipper.bypassed {
+                for c in 0..<channels {
+                    for i in 0..<frames { out[c][i] = clipper.process(out[c][i]) }
+                }
             }
             TruePeakLimiter.limit(&out, fs: fs)
             let measured = Loudness.integratedLufs(buffer: AudioBuffer(channels: out, sampleRate: fs))
@@ -463,7 +497,7 @@ struct MasteringEngine {
 
     // MARK: CLUB mode (loud club print, closed-loop -8 LUFS)
 
-    func clubRender(input: URL, output: URL, metrics: Metrics) throws -> URL {
+    func clubRender(input: URL, output: URL, metrics: Metrics, mode: MasteringMode = .core) throws -> URL {
         let buffer = try AudioLoader.load(url: input)
         let fs = buffer.sampleRate
         let channels = buffer.channelCount
@@ -497,7 +531,7 @@ struct MasteringEngine {
         var comp = GlueCompressor(thresholdDb: -20, ratio: compRatio,
                                   attackMs: 30, releaseMs: 150, fs: fs)
 
-        var work = buffer.channels
+        var work = DynamicsChain.applyTransient(channels: buffer.channels, fs: fs, metrics: metrics, mode: mode)
         for i in 0..<frames {
             for c in 0..<channels {
                 work[c][i] = hpf[c].process(work[c][i])
@@ -531,12 +565,14 @@ struct MasteringEngine {
             for c in 0..<channels { work[c][i] *= g }
         }
 
-        return try closedLoopFinish(work: work, fs: fs, target: MasteringMode.club.targetLufs, output: output)
+        // Dynamics stages: tamer → multiband → upward → section trim.
+        work = DynamicsChain.process(work: work, fs: fs, metrics: metrics, mode: mode, targetLufs: MasteringMode.club.targetLufs)
+        return try closedLoopFinish(work: work, fs: fs, target: MasteringMode.club.targetLufs, output: output, mode: mode)
     }
 
     // MARK: IVORY mode (gentle piano voicing, closed-loop -14 LUFS)
 
-    func ivoryRender(input: URL, output: URL, metrics: Metrics) throws -> URL {
+    func ivoryRender(input: URL, output: URL, metrics: Metrics, mode: MasteringMode = .core) throws -> URL {
         let buffer = try AudioLoader.load(url: input)
         let fs = buffer.sampleRate
         let channels = buffer.channelCount
@@ -557,7 +593,7 @@ struct MasteringEngine {
         var comp = GlueCompressor(thresholdDb: -18, ratio: 1.15, kneeDb: 6,
                                   attackMs: 60, releaseMs: 250, fs: fs)
 
-        var work = buffer.channels
+        var work = DynamicsChain.applyTransient(channels: buffer.channels, fs: fs, metrics: metrics, mode: mode)
         for i in 0..<frames {
             var meanSquare = 0.0
             for c in 0..<channels {
@@ -572,12 +608,14 @@ struct MasteringEngine {
             for c in 0..<channels { work[c][i] *= g }
         }
 
-        return try closedLoopFinish(work: work, fs: fs, target: MasteringMode.ivory.targetLufs, output: output)
+        // Dynamics stages: tamer → multiband → upward → section trim.
+        work = DynamicsChain.process(work: work, fs: fs, metrics: metrics, mode: mode, targetLufs: MasteringMode.ivory.targetLufs)
+        return try closedLoopFinish(work: work, fs: fs, target: MasteringMode.ivory.targetLufs, output: output, mode: mode)
     }
 
     // MARK: VOX mode (forward vocal presence, closed-loop -14 LUFS)
 
-    func voxRender(input: URL, output: URL, metrics: Metrics) throws -> URL {
+    func voxRender(input: URL, output: URL, metrics: Metrics, mode: MasteringMode = .core) throws -> URL {
         let buffer = try AudioLoader.load(url: input)
         let fs = buffer.sampleRate
         let channels = buffer.channelCount
@@ -596,7 +634,7 @@ struct MasteringEngine {
         var comp = GlueCompressor(thresholdDb: -20, ratio: 1.3, kneeDb: 6,
                                   attackMs: 40, releaseMs: 180, fs: fs)
 
-        var work = buffer.channels
+        var work = DynamicsChain.applyTransient(channels: buffer.channels, fs: fs, metrics: metrics, mode: mode)
         for i in 0..<frames {
             var meanSquare = 0.0
             for c in 0..<channels {
@@ -613,7 +651,9 @@ struct MasteringEngine {
             for c in 0..<channels { work[c][i] *= g }
         }
 
-        return try closedLoopFinish(work: work, fs: fs, target: MasteringMode.vox.targetLufs, output: output)
+        // Dynamics stages: tamer → multiband → upward → section trim.
+        work = DynamicsChain.process(work: work, fs: fs, metrics: metrics, mode: mode, targetLufs: MasteringMode.vox.targetLufs)
+        return try closedLoopFinish(work: work, fs: fs, target: MasteringMode.vox.targetLufs, output: output, mode: mode)
     }
 }
 

@@ -33,6 +33,14 @@ class MasteringExecutor:
         self.target_lufs = target_lufs if target_lufs != -14.0 else self.MODE_TARGETS[self.mode]
 
     def apply_compensation(self, input_path, output_path, metrics):
+        from .dynamics import apply_transient, apply_dynamics, soft_clip, mode_cfg
+        cfg = mode_cfg(self.mode)
+
+        # Whole-file flow: transient shaping wants the clean signal first,
+        # corrective stages sit after the tonal chain, clipper ahead of the wall.
+        data, sr = sf.read(input_path, dtype="float64", always_2d=True)
+        data = apply_transient(data, sr, self.mode)
+
         board = Pedalboard()
         
         lufs = metrics.get('integrated_lufs', -18.0)
@@ -99,20 +107,46 @@ class MasteringExecutor:
         board.append(Compressor(threshold_db=-22, ratio=comp_ratio, attack_ms=50, release_ms=200))
         
         # --- Stage 6: Gain Normalization ---
-        lufs_diff = self.target_lufs - lufs
+        # NOTE: neutral here — the true landing happens after the dynamics
+        # stages below (measured trim, mirroring the native closed loop).
+        # A unity placeholder keeps stage numbering stable.
+        lufs_diff = 0.0
         board.append(Gain(gain_db=lufs_diff))
         
-        # --- Stage 7: Safety Finalization (Brickwall) ---
-        board.append(Limiter(threshold_db=-1.0, release_ms=100))
+        # --- Stage 7: Safety Finalization (Brickwall, second pass) ---
+        # The clipper below eats transient peaks first so the limiter
+        # barely works — loudness without pumping.
+        processed = board(data, sr)
 
-        # Processing loop
-        with AudioFile(input_path) as f:
-            with AudioFile(output_path, 'w', f.samplerate, f.num_channels) as o:
-                while f.tell() < f.frames:
-                    chunk = f.read(f.samplerate)
-                    processed_chunk = board(chunk, f.samplerate, reset=False)
-                    o.write(processed_chunk)
-        
+        # --- Dynamics stages: tamer → multiband → upward → section trim ---
+        processed, _sections = apply_dynamics(processed, sr, self.mode, self.target_lufs)
+
+        # --- Measured landing: trim to target AFTER dynamics (closed loop) ---
+        # The loop runs THROUGH clip + wall because the limiter wears
+        # makeup gain — measuring before it would land hot every time.
+        wall = Pedalboard([Limiter(threshold_db=-1.0, release_ms=100)])
+        pre = processed
+        trim_db = 0.0
+        try:
+            import pyloudnorm as ln
+            for _ in range(3):
+                cand = pre * (10 ** (trim_db / 20))
+                cand = soft_clip(cand, cfg["clip_drive"])
+                cand = wall(cand, sr)
+                measured = float(ln.Meter(sr).integrated_loudness(cand))
+                residual = self.target_lufs - measured
+                if abs(residual) < 0.05:
+                    processed = cand
+                    break
+                trim_db += residual
+                processed = cand
+        except Exception:
+            processed = soft_clip(pre, cfg["clip_drive"])
+            processed = wall(processed, sr)
+
+        with AudioFile(output_path, 'w', sr, processed.shape[1]) as o:
+            o.write(processed)
+
         return output_path
 
 if __name__ == "__main__":

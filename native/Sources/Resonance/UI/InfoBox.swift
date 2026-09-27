@@ -123,6 +123,34 @@ enum Info {
     static let modeVox = HoverInfo(
         title: "vox · forward vocal presence",
         text: "Puts the voice on top without harshness. An 80Hz high-pass clears rumble off the vocal range, a 3kHz presence bell lifts intelligibility, air shelf keeps it open, and light 1.3:1 glue lands at -14 LUFS.")
+
+    static let transientDetail = HoverInfo(
+        title: "transient detail",
+        text: "Two-band attack/sustain shaping ahead of everything else. Attack lifts stick, pluck, and consonant definition; sustain raises body and room. Works on the clean signal before saturation reshapes it.")
+
+    static let resonanceTamer = HoverInfo(
+        title: "resonance tamer",
+        text: "Six detection-driven bells across 2–8kHz that cut harsh resonances only while they sound — the soothe-style answer to harshness that comes and goes. Static EQ would dull the whole track; this bites per moment.")
+
+    static let multiband = HoverInfo(
+        title: "multiband dynamics",
+        text: "Four corrective bands (sub/low/mid/high) with independent RMS compression. Tames a boomy verse without touching a bright chorus — the fix for dynamics that change across the spectrum where one broadband compressor must pump or do nothing.")
+
+    static let upwardDetail = HoverInfo(
+        title: "upward detail",
+        text: "A parallel path that lifts quiet detail — room, breath, tails — while loud passages hold still, blended back under the dry signal. Audibility, not harmonics: the modern detail trick.")
+
+    static let sectionTrim = HoverInfo(
+        title: "section trim",
+        text: "The track is measured in eight sections (loudness, range, crest). Quiet sections ride up and loud ones ease down within a tight clamp, crossfaded over half a second — verse and chorus finish at the same weight.")
+
+    static let dynamicsRange = HoverInfo(
+        title: "loudness range (lra)",
+        text: "How much the loudness breathes across the whole track, in loudness units. Modern dense masters sit under 7; dynamic acoustic material runs 9–12. High range with big section swings is what the section trim rides.")
+
+    static let crestFactor = HoverInfo(
+        title: "crest factor",
+        text: "Peak-to-average ratio in dB. High crest means punchy, transient-rich material; low crest means dense and loud. The transient designer protects crest while the clipper and limiter spend it.")
 }
 
 // MARK: - Hover plumbing

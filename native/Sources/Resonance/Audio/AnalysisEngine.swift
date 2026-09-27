@@ -43,13 +43,14 @@ struct AnalysisEngine {
                               spectralSlope: slope, rSquared: r2,
                               correlation: corr, stereoWidth: width,
                               mudCenterHz: spectralReport.mudCenterHz,
-                              mudProminenceDb: spectralReport.mudProminenceDb)
+                              mudProminenceDb: spectralReport.mudProminenceDb,
+                              lra: 0, crestFactorDb: 0, sectionSpreadDb: 0)
 
         let score = cohesionScore(metrics)
         let advice = generateSuggestions(metrics)
         onProgress?(100)
 
-        return AnalysisResult(
+        var result = AnalysisResult(
             title: url.lastPathComponent,
             format: url.pathExtension.uppercased(),
             duration: durationStr,
@@ -61,6 +62,18 @@ struct AnalysisEngine {
             perspective: advice.perspective,
             chat: advice.chat
         )
+        // Dynamics metering: LRA, crest, per-section spread + histogram.
+        let dyn = DynamicsChain.report(buffer: buffer)
+        result.dynamics = dyn
+        result.metrics.lra = dyn.lra
+        result.metrics.crestFactorDb = dyn.crestFactorDb
+        result.metrics.sectionSpreadDb = dyn.sectionSpreadDb
+        // Rebuild the read with dynamics-aware copy.
+        let advice2 = generateSuggestions(result.metrics)
+        result.chat = advice2.chat
+        result.perspective = advice2.perspective
+        result.suggestions = advice2.suggestions
+        return result
     }
 
     // MARK: waveform
@@ -147,6 +160,14 @@ struct AnalysisEngine {
         if tp > -0.5 {
             chat.append(ChatBubble(tone: .caution, title: "true peaks · codec safety",
                 text: "peaks are grazing \(fmt(tp)) db. once this gets encoded to mp3/aac, inter-sample peaks can clip past 0. i'll set a -1.0 db ceiling so it survives streaming intact."))
+        }
+
+        if m.sectionSpreadDb > 3 || m.lra > 9 {
+            chat.append(ChatBubble(tone: .insight, title: "dynamics · uneven sections",
+                text: "this one's breathing unevenly — sections swing \(fmt(m.sectionSpreadDb)) db with a loudness range of \(fmt(m.lra)) lu. i'm riding the sections toward each other and letting the multiband glue work per-band, so the verse and chorus finish at the same weight."))
+        } else {
+            chat.append(ChatBubble(tone: .good, title: "dynamics · holding steady",
+                text: "dynamics hold steady across sections (\(fmt(m.sectionSpreadDb)) db spread, \(fmt(m.lra)) lu range) — the glue just has to polish, not rescue. transients stay intact."))
         }
 
         let rec: String

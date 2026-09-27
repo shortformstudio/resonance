@@ -780,3 +780,55 @@ h1, .card-value, .status-label, .card-title {
     cursor: pointer;
     font-size: 10px;
 }
+
+/* ============================================================ */
+/* SECTION DYNAMICS STRIP — why the chain moves                 */
+/* ============================================================ */
+.dynamics-strip {
+    width: 100%;
+    max-width: 900px;
+    padding: 14px 18px 12px;
+    border-radius: 14px;
+}
+.dyn-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+.dyn-title {
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 5px;
+    color: var(--text-secondary);
+}
+.dyn-caption {
+    font-size: 10px;
+    font-family: var(--font-mono);
+    color: var(--accent);
+}
+.dyn-bars {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    height: 64px;
+}
+.dyn-bar {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    cursor: default;
+}
+.dyn-fill {
+    width: 100%;
+    background: rgba(212, 175, 55, 0.55);
+    border-radius: 2px;
+    min-height: 6px;
+}
+.dyn-bar span {
+    font-size: 8px;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+}

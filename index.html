@@ -144,6 +144,23 @@
                     <span class="card-title">WIDTH</span>
                     <span id="width-value" class="card-value">--</span>
                 </div>
+                <div class="metric-card glass" data-tooltip="RANGE: Loudness range. Under 7 is tight; over 9 breathes wide.">
+                    <span class="card-title">RANGE</span>
+                    <span id="lra-value" class="card-value">--</span>
+                </div>
+                <div class="metric-card glass" data-tooltip="CREST: Peak-to-average ratio. High crest is punchy; low crest is dense.">
+                    <span class="card-title">CREST</span>
+                    <span id="crest-value" class="card-value">--</span>
+                </div>
+            </section>
+
+            <!-- Section dynamics strip: why the chain moves -->
+            <section id="dynamics-strip" class="dynamics-strip glass hidden">
+                <div class="dyn-header">
+                    <span class="dyn-title">SECTION DYNAMICS</span>
+                    <span id="dyn-caption" class="dyn-caption"></span>
+                </div>
+                <div id="dyn-bars" class="dyn-bars"></div>
             </section>
 
             <!-- Expanded Visualization Engine Spot -->

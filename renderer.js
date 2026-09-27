@@ -2,6 +2,11 @@ const logEl = document.getElementById('status-log');
 const lufsEl = document.getElementById('lufs-value');
 const spectralEl = document.getElementById('spectral-value');
 const widthEl = document.getElementById('width-value');
+const lraEl = document.getElementById('lra-value');
+const crestEl = document.getElementById('crest-value');
+const dynStripEl = document.getElementById('dynamics-strip');
+const dynBarsEl = document.getElementById('dyn-bars');
+const dynCaptionEl = document.getElementById('dyn-caption');
 const btnExecute = document.getElementById('btn-execute');
 const historyListEl = document.getElementById('session-history');
 
@@ -111,6 +116,28 @@ function getChainForMode(modeId, metrics) {
     }
 }
 
+/** Dynamics stage detail per engine (mirrors native ModeDynamics). */
+const MODE_DYN = {
+    resonance_v2:     { tr: 'Attack +0.25 · Sustain +0.00', sup: '2–8kHz · 50%', mb: '4 bands · ~1.6:1', up: 'parallel mix 25%', trim: '±1.5 dB ride' },
+    clear:            { tr: 'Attack +0.15 · Sustain +0.00', sup: '2–8kHz · 70%', mb: '4 bands · ~1.4:1', up: 'parallel mix 20%', trim: '±1.0 dB ride' },
+    unified_hybrid_v1:{ tr: 'Attack +0.20 · Sustain +0.10', sup: '2–8kHz · 40%', mb: '4 bands · ~1.5:1', up: 'parallel mix 30%', trim: '±1.5 dB ride' },
+    club:             { tr: 'Attack +0.35 · Sustain +0.00', sup: '2–8kHz · 60%', mb: '4 bands · ~2.2:1', up: 'parallel mix 20%', trim: '±2.0 dB ride' },
+    ivory:            { tr: 'Attack +0.10 · Sustain +0.00', sup: '2–8kHz · 30%', mb: '4 bands · ~1.3:1', up: 'parallel mix 20%', trim: '±1.0 dB ride' },
+    vox:              { tr: 'Attack +0.20 · Sustain +0.00', sup: '2–8kHz · 80%', mb: '4 bands · ~1.6:1', up: 'parallel mix 25%', trim: '±1.5 dB ride' },
+};
+
+/** Full chain: base six stages with dynamics stages spliced in signal order. */
+function fullChainForMode(modeId, metrics) {
+    const chain = getChainForMode(modeId, metrics).slice();
+    const d = MODE_DYN[modeId] || MODE_DYN.resonance_v2;
+    chain.splice(1, 0, ['Transient Detail', d.tr]);
+    chain.splice(4, 0, ['Resonance Tamer', d.sup]);
+    chain.splice(5, 0, ['Multiband Dynamics', d.mb]);
+    chain.splice(8, 0, ['Upward Detail', d.up]);
+    chain.splice(9, 0, ['Section Trim', d.trim]);
+    return chain;
+}
+
 function renderModeGrid() {
     const grid = document.getElementById('mode-grid');
     if (!grid) return;
@@ -144,7 +171,7 @@ function renderModeDetail() {
         detail.innerHTML = 'pick an engine, then drop a track — tapping any card auditions 10 seconds.';
         return;
     }
-    const chain = getChainForMode(selectedMode, currentAnalysis.metrics);
+    const chain = fullChainForMode(selectedMode, currentAnalysis.metrics);
     detail.innerHTML = chain.map(([name, item]) =>
         `<div class="chain-stage"><b>${escapeText(name)}:</b> ${escapeText(item)}</div>`).join('');
 }
@@ -483,7 +510,7 @@ function updateProposedCompensation() {
     if (!currentAnalysis) return;
 
     proposedChain.innerHTML = '';
-    const chain = getChainForMode(selectedMode, currentAnalysis.metrics);
+    const chain = fullChainForMode(selectedMode, currentAnalysis.metrics);
 
     chain.forEach(([name, detail]) => {
         const div = document.createElement('div');
@@ -538,6 +565,34 @@ async function runAnalysis() {
     }
 }
 
+/** Section dynamics strip: per-section bars + spread caption. */
+function renderDynamicsStrip(dynamics) {
+    if (!dynStripEl || !dynBarsEl) return;
+    const sections = (dynamics && dynamics.sections) || [];
+    if (!sections.length) {
+        dynStripEl.classList.add('hidden');
+        return;
+    }
+    dynStripEl.classList.remove('hidden');
+    const peak = Math.max(...sections.map(s => s.lufs));
+    const floor = Math.min(...sections.map(s => s.lufs));
+    const span = Math.max(peak - floor, 0.5);
+    dynBarsEl.innerHTML = '';
+    sections.forEach((s, i) => {
+        const h = Math.max(6, ((s.lufs - floor) / span) * 44);
+        const bar = document.createElement('div');
+        bar.className = 'dyn-bar';
+        bar.title = `section ${i + 1} · ${Math.round(s.start_sec)}s · ${s.lufs} LUFS`;
+        bar.innerHTML = `<div class="dyn-fill" style="height:${h.toFixed(0)}px"></div><span>${s.lufs}</span>`;
+        dynBarsEl.appendChild(bar);
+    });
+    if (dynCaptionEl) {
+        const spread = dynamics.section_spread_db != null ? dynamics.section_spread_db : '—';
+        const lra = dynamics.lra != null ? dynamics.lra : '—';
+        dynCaptionEl.textContent = `spread ${spread} dB · LRA ${lra} LU`;
+    }
+}
+
 /** Paint metrics, audit comments, metadata, and waveform from an analysis result. */
 function paintAnalysis(result) {
     if (result.metrics) {
@@ -551,6 +606,10 @@ function paintAnalysis(result) {
         lufsEl.textContent = result.metrics.integrated_lufs;
         spectralEl.textContent = result.metrics.spectral_slope;
         widthEl.textContent = result.metrics.correlation;
+        if (lraEl && result.metrics.lra != null) lraEl.textContent = `${result.metrics.lra} LU`;
+        if (crestEl && result.metrics.crest_db != null) crestEl.textContent = `${result.metrics.crest_db} dB`;
+
+        renderDynamicsStrip(result.dynamics);
 
         metaTitle.textContent = result.title;
         metaDuration.textContent = result.duration;
