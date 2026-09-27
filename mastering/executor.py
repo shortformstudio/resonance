@@ -14,9 +14,23 @@ class MasteringExecutor:
     4. Phase-Coherent Horizontal Expansion
     5. Program-Dependent Compression (The Glue)
     6. Transparent Brickwall Finalization
+
+    Mode-aware: club lands at -8 LUFS with hotter drive; ivory/vox stay
+    transparent at -14 with voicing tweaks. Unknown modes fall back to core.
     """
-    def __init__(self, target_lufs=-14.0):
-        self.target_lufs = target_lufs
+    MODE_TARGETS = {
+        "resonance_v2": -14.0, "core": -14.0,
+        "clear": -14.0, "pure": -14.0,
+        "unified_hybrid_v1": -14.0, "heat": -14.0,
+        "club": -8.0,
+        "ivory": -14.0,
+        "vox": -14.0,
+    }
+
+    def __init__(self, target_lufs=-14.0, mode="resonance_v2"):
+        self.mode = mode if mode in self.MODE_TARGETS else "resonance_v2"
+        # An explicit target always wins; otherwise the mode decides.
+        self.target_lufs = target_lufs if target_lufs != -14.0 else self.MODE_TARGETS[self.mode]
 
     def apply_compensation(self, input_path, output_path, metrics):
         board = Pedalboard()
@@ -31,9 +45,16 @@ class MasteringExecutor:
         board.append(HighpassFilter(cutoff_frequency_hz=hpf_freq))
         
         # --- Stage 2: Multi-Stage Saturation (Organic Heat) ---
-        # We blend saturation depth based on the input signal's 'thinness'
-        drive = 1.5 if lufs < -18 else 1.0
-        board.append(Distortion(drive_db=drive))
+        # We blend saturation depth based on the input signal's 'thinness'.
+        # Club runs hotter; ivory stays clean to protect transients.
+        if self.mode == "club":
+            drive = 2.5
+        elif self.mode == "ivory":
+            drive = 0.0
+        else:
+            drive = 1.5 if lufs < -18 else 1.0
+        if drive > 0:
+            board.append(Distortion(drive_db=drive))
         
         # --- Stage 3: Adaptive Spectral Balancing ---
         # Dynamically addresses 'Sonic Gravity' (Mud) and 'Expensive Air'
@@ -45,8 +66,17 @@ class MasteringExecutor:
         
         # Address Air (10kHz+)
         # We use a broad Pultec-style shelf for that expensive sheen
-        air_gain = 3.5 if slope > 1.2 else 2.0
+        if self.mode == "club":
+            air_gain = 4.0
+        elif self.mode == "ivory":
+            air_gain = 2.0
+        else:
+            air_gain = 3.5 if slope > 1.2 else 2.0
         board.append(HighShelfFilter(cutoff_frequency_hz=12000, gain_db=air_gain))
+
+        # Vox presence lift — the voice sits on top without harshness.
+        if self.mode == "vox":
+            board.append(PeakFilter(cutoff_frequency_hz=3000, gain_db=2.5, q=1.0))
         
         # Address Body (150-250Hz)
         if slope < 1.1:
@@ -61,7 +91,11 @@ class MasteringExecutor:
         # --- Stage 5: Program-Dependent Glue (Compression) ---
         # Very low ratio for transparent leveling (Acoustic influence)
         # but with enough control to solidify the foundation (Modern influence).
-        comp_ratio = 1.2 if lufs > -12 else 1.5
+        # Club squeezes harder for density.
+        if self.mode == "club":
+            comp_ratio = 2.0
+        else:
+            comp_ratio = 1.2 if lufs > -12 else 1.5
         board.append(Compressor(threshold_db=-22, ratio=comp_ratio, attack_ms=50, release_ms=200))
         
         # --- Stage 6: Gain Normalization ---

@@ -111,6 +111,18 @@ enum Info {
     static let modeV1 = HoverInfo(
         title: "unified hybrid v1 · original alpha",
         text: "The original engine from the June 2025 alpha release. Adaptive HPF, gentle broadband saturation (raw tanh, no ADAA), spectral balancing with mud cut and air/body shelves, mono-sub fold for phase-risky material, single-band RMS glue compression, and a simple gain trim into the true-peak limiter. Warm and straightforward — no M/S expansion, no ADAA stages, no closed-loop re-measurement. A gentler, simpler sound.")
+
+    static let modeClub = HoverInfo(
+        title: "club · loud club print",
+        text: "Maximum density for big systems. Hotter ADAA drive, harder 2:1 glue compression, lifted air, and a closed-loop landing at -8 LUFS instead of -14. Loud and open is the craft; this one leans loud.")
+
+    static let modeIvory = HoverInfo(
+        title: "ivory · gentle piano voicing",
+        text: "Built for piano and felt dynamics. A soft 25Hz high-pass, no saturation weight, transparent 1.15:1 leveling, and a closed-loop landing at -14 LUFS. Transients pass untouched — what you hear is the performance, finished.")
+
+    static let modeVox = HoverInfo(
+        title: "vox · forward vocal presence",
+        text: "Puts the voice on top without harshness. An 80Hz high-pass clears rumble off the vocal range, a 3kHz presence bell lifts intelligibility, air shelf keeps it open, and light 1.3:1 glue lands at -14 LUFS.")
 }
 
 // MARK: - Hover plumbing

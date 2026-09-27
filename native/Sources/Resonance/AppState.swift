@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AVFoundation
 
 @MainActor
 final class AppState: ObservableObject {
@@ -28,11 +29,25 @@ final class AppState: ObservableObject {
     @Published var hoverInfo: HoverInfo?
 
     // Mastering engine selection
-    @AppStorage("masteringModeRaw") var masteringModeRaw: String = MasteringMode.resonanceV2.rawValue
+    @AppStorage("masteringModeRaw") var masteringModeRaw: String = MasteringMode.core.rawValue
     var masteringMode: MasteringMode {
-        get { MasteringMode(rawValue: masteringModeRaw) ?? .resonanceV2 }
+        get { MasteringMode(rawValue: masteringModeRaw) ?? .core }
         set { masteringModeRaw = newValue.rawValue }
     }
+
+    // Single-blurb chat viewport (one mastering-expert blurb at a time)
+    @Published var visibleChatIdx = 0
+    @Published var chatPaused = false
+    private var chatCycleTimer: Timer?
+
+    // 10-second audition previews (middle slice, every engine)
+    @Published var previewURLs: [MasteringMode: URL] = [:]
+    @Published var batchPreviewMap: [String: [MasteringMode: URL]] = [:]
+    @Published var previewGenerating = false
+    @Published var previewProgressMode: MasteringMode?
+    @Published var playingPreviewMode: MasteringMode?
+    private var previewPlayer: AVAudioPlayer?
+    private var previewStopTimer: Timer?
 
     /// All exports now use separate folders: masters/ and originals/
     nonisolated static var masterDir: URL {
@@ -65,9 +80,34 @@ final class AppState: ObservableObject {
 
     func addChat(_ text: String, tone: ChatTone = .insight, title: String? = nil) {
         chat.append(ChatBubble(tone: tone, title: title, text: text))
+        visibleChatIdx = max(0, chat.count - 1) // single-append jumps to newest
     }
 
-    func clearChat() { chat.removeAll() }
+    func clearChat() {
+        chat.removeAll()
+        visibleChatIdx = 0
+    }
+
+    /// Single-blurb viewport controls.
+    func resetChatView() { visibleChatIdx = 0 }
+    func advanceChat() {
+        guard !chat.isEmpty else { return }
+        visibleChatIdx = (visibleChatIdx + 1) % chat.count
+    }
+    func startChatCycle() {
+        stopChatCycle()
+        chatCycleTimer = Timer.scheduledTimer(withTimeInterval: 5.8, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, !self.chatPaused,
+                      !self.isAnalyzing, !self.isMastering, !self.isBatchRunning else { return }
+                self.advanceChat()
+            }
+        }
+    }
+    func stopChatCycle() {
+        chatCycleTimer?.invalidate()
+        chatCycleTimer = nil
+    }
 
     func renderAssistantChat(_ analysis: AnalysisResult, trackName: String?) {
         clearChat()
@@ -76,6 +116,7 @@ final class AppState: ObservableObject {
         }
         chat.append(contentsOf: analysis.chat)
         assistantStatus = "analysis ready · your call"
+        visibleChatIdx = 0 // wholesale rebuild resets to the top
     }
 
     func addToHistory(name: String, path: URL) {
@@ -87,12 +128,16 @@ final class AppState: ObservableObject {
 
     func handleFileSelection(_ url: URL) {
         exitBatchMode()
+        stopPreview()
+        clearPreviewCache()
         currentFile = url
         currentAnalysis = nil
         addLog("Target: \(url.lastPathComponent)")
         progress = 0
         isAnalyzing = true
         assistantStatus = "auditing signal dna…"
+        clearChat()
+        addChat("auditing signal dna…", tone: .working)
 
         Task.detached(priority: .userInitiated) { [weak self] in
             do {
@@ -106,6 +151,7 @@ final class AppState: ObservableObject {
                     self.renderAssistantChat(result, trackName: result.title)
                     self.addLog("DNA mapped. Hybrid compensation plan initialized.")
                     self.isAnalyzing = false
+                    self.generatePreviews(file: url, metrics: result.metrics)
                 }
             } catch {
                 await MainActor.run { [weak self] in
@@ -155,7 +201,7 @@ final class AppState: ObservableObject {
     }
 
     /// Master one file: chain render + original reference copy.
-    nonisolated static func runMaster(input: URL, metrics: Metrics, mode: MasteringMode = .resonanceV2) -> Result<MasterResult, Error> {
+    nonisolated static func runMaster(input: URL, metrics: Metrics, mode: MasteringMode = .core) -> Result<MasterResult, Error> {
         do {
             let fm = FileManager.default
             try fm.createDirectory(at: masterDir, withIntermediateDirectories: true)
@@ -204,20 +250,40 @@ final class AppState: ObservableObject {
     // MARK: batch flow
 
     func loadBatch(_ urls: [URL]) {
-        batchTracks = urls.map { BatchTrack(url: $0, name: $0.lastPathComponent) }
+        let seed = masteringMode
+        batchTracks = urls.map { BatchTrack(url: $0, name: $0.lastPathComponent, mode: seed) }
         currentAnalysis = nil
         addLog("Batch loaded: \(batchTracks.count) tracks.")
+        clearPreviewCache()
         clearChat()
         addChat("loaded **\(batchTracks.count) tracks**. i'll analyze each one individually and give every track its own custom master — no blanket presets. hit **master all** when you're ready, or tap any track to see its read.",
                 tone: .greeting, title: "batch ready")
+        visibleChatIdx = 0
         assistantStatus = "\(batchTracks.count) tracks queued"
         analyzeBatchSequentially()
     }
 
     func exitBatchMode() { batchTracks.removeAll() }
 
+    /// Per-track engine control: change one pending track's engine.
+    func setBatchTrackMode(_ id: BatchTrack.ID, _ mode: MasteringMode) {
+        guard let i = batchTracks.firstIndex(where: { $0.id == id }) else { return }
+        batchTracks[i].mode = mode
+        addLog("Batch engine: \(batchTracks[i].name) → \(mode.displayName)")
+    }
+
+    /// Push the global engine onto every track that hasn't started yet.
+    func applyGlobalModeToPendingBatch() {
+        let mode = masteringMode
+        for i in batchTracks.indices where batchTracks[i].status == .queued || batchTracks[i].status == .ready {
+            batchTracks[i].mode = mode
+        }
+        addLog("Batch engine: pending tracks → \(mode.displayName)")
+    }
+
     func showTrackRead(_ track: BatchTrack) {
         guard let analysis = track.analysis else { return }
+        stopPreview()
         currentAnalysis = analysis
         currentFile = track.url
         renderAssistantChat(analysis, trackName: track.name)
@@ -248,6 +314,8 @@ final class AppState: ObservableObject {
                 case .success(let analysis):
                     self.batchTracks[index].analysis = analysis
                     self.batchTracks[index].status = .ready
+                    self.generatePreviews(file: url, metrics: analysis.metrics,
+                                          trackId: self.batchTracks[index].name)
                 case .failure(let error):
                     self.batchTracks[index].status = .error
                     self.addLog("Analysis failed for \(self.batchTracks[index].name): \(error.localizedDescription)")
@@ -275,12 +343,14 @@ final class AppState: ObservableObject {
             for index in self.batchTracks.indices {
                 guard self.batchTracks.indices.contains(index),
                       let analysis = self.batchTracks[index].analysis else { continue }
+                let trackMode = self.batchTracks[index].mode
                 self.batchTracks[index].status = .mastering
                 self.assistantStatus = "mastering \(self.batchTracks[index].name)…"
+                self.addLog("MASTER: \(self.batchTracks[index].name) [\(trackMode.displayName)]")
                 let url = self.batchTracks[index].url
                 let metrics = analysis.metrics
                 let result: Result<MasterResult, Error> = await Task.detached(priority: .userInitiated) {
-                    Self.runMaster(input: url, metrics: metrics, mode: mode)
+                    Self.runMaster(input: url, metrics: metrics, mode: trackMode)
                 }.value
                 guard self.batchTracks.indices.contains(index) else { return }
                 switch result {
@@ -300,6 +370,118 @@ final class AppState: ObservableObject {
             self.addChat("batch complete — **\(doneCount) of \(self.batchTracks.count)** mastered, each with its own treatment. everything's in your **resonance masters/** folder. tap any track to reveal it. nice work.",
                          tone: .done, title: nil)
         }
+    }
+
+    // MARK: 10-second audition previews
+
+    nonisolated static var previewCacheDir: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("resonance-previews", isDirectory: true)
+    }
+
+    /// Center `seconds` of the buffer — the middle slice every engine auditions.
+    nonisolated static func middleSlice(buffer: AudioBuffer, seconds: Double = 10) -> AudioBuffer {
+        let fs = buffer.sampleRate
+        let want = max(1, Int(seconds * fs))
+        let total = buffer.frameCount
+        guard total > want else { return buffer }
+        let start = (total - want) / 2
+        return AudioBuffer(channels: buffer.channels.map { Array($0[start ..< start + want]) },
+                           sampleRate: fs)
+    }
+
+    func clearPreviewCache() {
+        stopPreview()
+        previewURLs = [:]
+        batchPreviewMap = [:]
+        previewGenerating = false
+        previewProgressMode = nil
+        try? FileManager.default.removeItem(at: Self.previewCacheDir)
+    }
+
+    /// Preview map for whatever is on screen (batch resolves via analysis title).
+    func previewMapForCurrent() -> [MasteringMode: URL] {
+        if isBatchMode, let title = currentAnalysis?.title,
+           let map = batchPreviewMap[title] { return map }
+        return previewURLs
+    }
+
+    func isPreviewReady(_ mode: MasteringMode) -> Bool { previewMapForCurrent()[mode] != nil }
+
+    /// Render the middle 10 seconds in every engine. Track-scoped when trackId is set.
+    func generatePreviews(file: URL, metrics: Metrics, trackId: String? = nil) {
+        previewGenerating = true
+        previewProgressMode = nil
+        Task.detached(priority: .userInitiated) { [weak self] in
+            var map: [MasteringMode: URL] = [:]
+            do {
+                let buffer = try AudioLoader.load(url: file)
+                let slice = Self.middleSlice(buffer: buffer, seconds: 10)
+                let dir = Self.previewCacheDir
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let stem = file.deletingPathExtension().lastPathComponent
+                let sliceURL = dir.appendingPathComponent("\(stem)-slice.wav")
+                try WavWriter.write(channels: slice.channels, sampleRate: slice.sampleRate,
+                                    to: sliceURL, bitDepth: 16)
+                for mode in MasteringMode.allCases {
+                    await MainActor.run { [weak self] in self?.previewProgressMode = mode }
+                    let out = dir.appendingPathComponent("\(stem)-preview-\(mode.rawValue).wav")
+                    _ = try MasteringEngine().render(mode: mode, input: sliceURL, output: out, metrics: metrics)
+                    map[mode] = out
+                }
+                try? FileManager.default.removeItem(at: sliceURL)
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.addLog("Preview render failed: \(error.localizedDescription)")
+                }
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                if let id = trackId {
+                    self.batchPreviewMap[id] = map
+                } else {
+                    self.previewURLs = map
+                }
+                self.previewGenerating = false
+                self.previewProgressMode = nil
+                if !map.isEmpty {
+                    self.assistantStatus = "previews ready · tap an engine to audition"
+                    self.addLog("10-sec previews ready (\(map.count) engines).")
+                }
+            }
+        }
+    }
+
+    /// Play (or toggle off) an engine's 10-second audition.
+    func playPreview(_ mode: MasteringMode, trackId: String? = nil) {
+        let map: [MasteringMode: URL]
+        if let id = trackId, let m = batchPreviewMap[id] { map = m }
+        else { map = previewMapForCurrent() }
+        guard let url = map[mode] else { return }
+        if playingPreviewMode == mode, previewPlayer?.isPlaying == true {
+            stopPreview()
+            return
+        }
+        stopPreview()
+        do {
+            previewPlayer = try AVAudioPlayer(contentsOf: url)
+            previewPlayer?.play()
+            playingPreviewMode = mode
+            assistantStatus = "auditioning 10 sec — middle slice"
+            let dur = previewPlayer?.duration ?? 10
+            previewStopTimer = Timer.scheduledTimer(withTimeInterval: dur, repeats: false) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.stopPreview() }
+            }
+        } catch {
+            addLog("Preview playback failed: \(error.localizedDescription)")
+        }
+    }
+
+    func stopPreview() {
+        previewStopTimer?.invalidate()
+        previewStopTimer = nil
+        previewPlayer?.stop()
+        previewPlayer = nil
+        playingPreviewMode = nil
     }
 
     // MARK: file intake

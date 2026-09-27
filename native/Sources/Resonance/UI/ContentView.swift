@@ -53,6 +53,7 @@ struct Sidebar: View {
             DropZone()
             if let analysis = state.currentAnalysis {
                 TrackMetadata(analysis: analysis)
+                MasterOptionsPanel(analysis: analysis)
                 Group {
                     if state.isBatchMode {
                         MasterButton(title: "Master All",
@@ -65,9 +66,6 @@ struct Sidebar: View {
                             state.masterCurrentTrack()
                         }
                     }
-                }
-                if state.isBatchMode == false {
-                    ModePicker(analysis: analysis)
                 }
             }
             SectionHeader("PROCESS")
@@ -285,35 +283,66 @@ struct MainContent: View {
 struct ChatPanel: View {
     @EnvironmentObject var state: AppState
 
+    private var visibleBubble: ChatBubble? {
+        guard !state.chat.isEmpty else { return nil }
+        let idx = min(max(state.visibleChatIdx, 0), state.chat.count - 1)
+        return state.chat[idx]
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Text("◉").foregroundStyle(Theme.accent).font(.system(size: 13))
                 Spacer()
+                Button {
+                    state.chatPaused.toggle()
+                } label: {
+                    Image(systemName: state.chatPaused ? "play.fill" : "pause.fill")
+                        .font(.system(size: 9))
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                .buttonStyle(.plain)
                 Text(state.assistantStatus)
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(Theme.textSecondary)
+                    .id(state.assistantStatus)
             }
             .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 2)
 
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(state.chat) { bubble in
-                            ChatBubbleView(bubble: bubble).id(bubble.id)
-                        }
-                    }
-                    .padding(.horizontal, 10).padding(.bottom, 8)
+            // Single-blurb viewport: exactly one mastering-expert blurb at a time.
+            ZStack {
+                if let bubble = visibleBubble {
+                    ChatBubbleView(bubble: bubble)
+                        .id(bubble.id)
+                        .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                        .onTapGesture { state.advanceChat() }
                 }
-                .onChange(of: state.chat.count) {
-                    if let last = state.chat.last {
-                        withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+            }
+            .animation(.easeInOut(duration: 0.62), value: state.visibleChatIdx)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .padding(.horizontal, 10).padding(.bottom, 4)
+
+            // Dot indicators 1/N.
+            if state.chat.count > 1 {
+                HStack(spacing: 5) {
+                    Spacer()
+                    ForEach(state.chat.indices, id: \.self) { i in
+                        Circle()
+                            .fill(i == state.visibleChatIdx ? Theme.accent : Theme.textSecondary.opacity(0.3))
+                            .frame(width: 5, height: 5)
+                            .onTapGesture { state.visibleChatIdx = i }
                     }
+                    Spacer()
                 }
+                .padding(.bottom, 8)
             }
         }
         .glass()
         .infoHover(Info.chat)
+        .onAppear { state.startChatCycle() }
+        .onDisappear { state.stopChatCycle() }
+        .onChange(of: state.currentAnalysis?.title) { state.resetChatView() }
+        .onChange(of: state.isAnalyzing) { state.resetChatView() }
     }
 }
 
@@ -323,7 +352,7 @@ struct StatsPanel: View {
     var body: some View {
         VStack(spacing: 10) {
             if let analysis = state.currentAnalysis {
-                AuditPanel(analysis: analysis)
+                AuditPanel()
                 MetricsGrid(metrics: analysis.metrics)
                 WaveformView(waveform: analysis.waveform)
                     .frame(height: 90)
@@ -429,25 +458,38 @@ struct BatchQueue: View {
             ScrollView {
                 VStack(spacing: 2) {
                     ForEach(state.batchTracks) { track in
-                        Button { state.showTrackRead(track) } label: {
-                            HStack {
-                                Text(track.name)
-                                    .font(.system(size: 11))
-                                    .lineLimit(1)
-                                Spacer()
-                                if let a = track.analysis {
-                                    Text("\(a.metrics.integratedLufs, specifier: "%.2f") LUFS · slope \(a.metrics.spectralSlope, specifier: "%.3f")")
-                                        .font(.system(size: 10, design: .monospaced))
-                                        .foregroundStyle(Theme.textSecondary)
+                        HStack {
+                            Button { state.showTrackRead(track) } label: {
+                                HStack {
+                                    Text(track.name)
+                                        .font(.system(size: 11))
+                                        .lineLimit(1)
+                                    Spacer()
+                                    if let a = track.analysis {
+                                        Text("\(a.metrics.integratedLufs, specifier: "%.2f") LUFS · slope \(a.metrics.spectralSlope, specifier: "%.3f")")
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundStyle(Theme.textSecondary)
+                                    }
                                 }
-                                Text(track.status.label)
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(statusColor(track.status))
+                                .padding(.horizontal, 8).padding(.vertical, 5)
+                                .contentShape(Rectangle())
                             }
-                            .padding(.horizontal, 8).padding(.vertical, 5)
-                            .contentShape(Rectangle())
+                            .buttonStyle(.plain)
+                            Picker("", selection: Binding(
+                                get: { track.mode },
+                                set: { state.setBatchTrackMode(track.id, $0) }
+                            )) {
+                                ForEach(MasteringMode.allCases, id: \.self) { mode in
+                                    Text(mode.displayName).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .labelsHidden()
+                            .fixedSize()
+                            Text(track.status.label)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(statusColor(track.status))
                         }
-                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -460,39 +502,51 @@ struct BatchQueue: View {
 }
 
 struct AuditPanel: View {
-    let analysis: AnalysisResult
+    @EnvironmentObject var state: AppState
+
+    private var analysis: AnalysisResult? { state.currentAnalysis }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("audit")
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                .foregroundStyle(Theme.accent)
+            HStack(spacing: 8) {
+                Text("audit")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Theme.accent)
+                Spacer()
+                Text("\(state.masteringMode.displayName) · \(state.masteringMode.targetLabel)")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(Theme.accent)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Theme.accent.opacity(0.5)))
+            }
 
-            HStack(alignment: .top, spacing: 16) {
-                VStack(alignment: .leading, spacing: 8) {
-                    SectionHeader("SIGNAL DNA AUDIT")
-                        .infoHover(Info.dnaAudit)
-                    AuditItem(label: "Loudness", value: "\(fmt(analysis.metrics.integratedLufs)) LUFS",
-                              comment: loudnessComment)
-                        .infoHover(Info.loudness)
-                    AuditItem(label: "Spectral", value: fmt3(analysis.metrics.spectralSlope),
-                              comment: spectralComment)
-                        .infoHover(Info.spectral)
-                    AuditItem(label: "Stereo", value: fmt3(analysis.metrics.correlation),
-                              comment: stereoComment)
-                        .infoHover(Info.width)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                VStack(alignment: .leading, spacing: 8) {
-                    SectionHeader("TANDEM COMPENSATION PLAN")
-                        .infoHover(Info.compensationPlan)
-                    ForEach(proposedChain, id: \.0) { name, detail, info in
-                        AuditItem(label: name, value: detail, comment: nil)
-                            .infoHover(info)
+            if let analysis {
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        SectionHeader("SIGNAL DNA AUDIT")
+                            .infoHover(Info.dnaAudit)
+                        AuditItem(label: "Loudness", value: "\(fmt(analysis.metrics.integratedLufs)) LUFS",
+                                  comment: loudnessComment)
+                            .infoHover(Info.loudness)
+                        AuditItem(label: "Spectral", value: fmt3(analysis.metrics.spectralSlope),
+                                  comment: spectralComment)
+                            .infoHover(Info.spectral)
+                        AuditItem(label: "Stereo", value: fmt3(analysis.metrics.correlation),
+                                  comment: stereoComment)
+                            .infoHover(Info.width)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        SectionHeader("TANDEM COMPENSATION PLAN")
+                            .infoHover(Info.compensationPlan)
+                        ForEach(modeChain, id: \.0) { name, detail, info in
+                            AuditItem(label: name, value: detail, comment: nil)
+                                .infoHover(info)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(14)
@@ -502,7 +556,14 @@ struct AuditPanel: View {
     private func fmt(_ v: Double) -> String { String(format: "%.2f", v) }
     private func fmt3(_ v: Double) -> String { String(format: "%.3f", v) }
 
+    /// Chain for the selected engine, tuned to the current read.
+    private var modeChain: [(String, String, HoverInfo)] {
+        guard let analysis else { return [] }
+        return state.masteringMode.chainPreview(metrics: analysis.metrics)
+    }
+
     private var loudnessComment: String {
+        guard let analysis else { return "" }
         let lufs = analysis.metrics.integratedLufs
         if lufs < -20 { return "Signal is extremely anemic. We're missing the saturation 'floor'—ready for a significant thermal lift." }
         if lufs > -10 { return "Signal is aggressively hot. We're trading dynamic impact for raw RMS density." }
@@ -510,6 +571,7 @@ struct AuditPanel: View {
     }
 
     private var spectralComment: String {
+        guard let analysis else { return "" }
         let slope = analysis.metrics.spectralSlope
         if slope > 1.6 { return "Heavy low-mid accumulation. It's creating a 'sonic fog' that masks upper-harmonic detail." }
         if slope < 1.1 { return "Top-heavy bias. Mix feels brittle and lacks mechanical weight in the 200Hz chest region." }
@@ -517,23 +579,10 @@ struct AuditPanel: View {
     }
 
     private var stereoComment: String {
-        analysis.metrics.correlation < 0.4
+        guard let analysis else { return "" }
+        return analysis.metrics.correlation < 0.4
             ? "Critical phase incoherence. Image collapse likely in mono. Tightening center focus."
             : "Solid stereo integrity. Field is wide but focused and phase-coherent."
-    }
-
-    private var proposedChain: [(String, String, HoverInfo)] {
-        let m = analysis.metrics
-        return [
-            ("Sub-Sonic Control", m.spectralSlope > 1.4 ? "35Hz HPF" : "30Hz HPF", Info.subSonic),
-            ("Organic Heat", m.integratedLufs < -18 ? "+1.5dB Drive" : "+1.0dB Drive", Info.organicHeat),
-            ("Spectral Balancing",
-             m.spectralSlope > 1.4 ? String(format: "Mud Cut @ %.0fHz", m.mudCenterHz) : "Air Excitation",
-             Info.spectralBalancing),
-            ("Spatial Width", m.correlation > 0.7 ? "M/S Expansion" : (m.correlation < 0.6 ? "Sub Mono-Fold" : "Image Hold"), Info.spatialWidth),
-            ("Program Glue", m.integratedLufs > -12 ? "1.2:1 Soft Knee" : "1.5:1 Soft Knee", Info.programGlue),
-            ("Final Offset", "→ -14.0 LUFS exact", Info.finalOffset)
-        ]
     }
 }
 
@@ -801,35 +850,101 @@ struct PlayerBar: View {
     }
 }
 
-struct ModePicker: View {
+// MARK: - Master options (engine cards before print)
+
+struct MasterOptionsPanel: View {
     @EnvironmentObject var state: AppState
     let analysis: AnalysisResult
 
+    private var suggested: MasteringMode { MasteringMode.recommended(for: analysis.metrics) }
+
     var body: some View {
-        HStack(spacing: 8) {
-            Text("ENGINE:")
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                .tracking(1.2)
+        VStack(alignment: .leading, spacing: 8) {
+            Text("HOW TO MASTER")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .tracking(1.5)
                 .foregroundStyle(Theme.textSecondary)
-            Picker("", selection: Binding(
-                get: { state.masteringMode },
-                set: { state.masteringMode = $0 }
-            )) {
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
                 ForEach(MasteringMode.allCases, id: \.self) { mode in
-                    Text(mode.displayName).tag(mode)
+                    ModeCard(mode: mode,
+                             suggested: mode == suggested,
+                             isGenerating: state.previewGenerating && state.previewProgressMode == mode,
+                             isReady: state.isPreviewReady(mode),
+                             isPlaying: state.playingPreviewMode == mode)
                 }
             }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .fixedSize()
-            .onChange(of: state.masteringMode) { old, new in
-                state.addLog("Engine switched to \(new.displayName)")
-            }
+            Text(state.playingPreviewMode != nil
+                 ? "auditioning 10 sec — middle slice"
+                 : (state.previewGenerating ? "rendering 10 sec preview…" : "tap to audition 10 sec"))
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(Theme.textSecondary)
         }
-        .padding(.horizontal, 10).padding(.vertical, 5)
-        .background(Theme.glassBg)
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.glassBorder, lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .infoHover(Info.modePicker)
+    }
+}
+
+struct ModeCard: View {
+    @EnvironmentObject var state: AppState
+    let mode: MasteringMode
+    let suggested: Bool
+    let isGenerating: Bool
+    let isReady: Bool
+    let isPlaying: Bool
+
+    private var isSelected: Bool { state.masteringMode == mode }
+
+    var body: some View {
+        Button {
+            state.masteringMode = mode
+            state.applyGlobalModeToPendingBatch()
+            state.addLog("Engine switched to \(mode.displayName)")
+            state.playPreview(mode)
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 4) {
+                    Text(mode.displayName)
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(isSelected ? Theme.accent : Theme.textPrimary)
+                    if suggested {
+                        Text("★")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Theme.accent)
+                    }
+                    Spacer()
+                    if isPlaying {
+                        Image(systemName: "pause.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Theme.accent)
+                    } else if isGenerating {
+                        ProgressView()
+                            .controlSize(.mini)
+                    } else if isReady {
+                        Image(systemName: "play.circle")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Theme.textSecondary)
+                    } else {
+                        Circle()
+                            .strokeBorder(Theme.textSecondary.opacity(0.5), lineWidth: 1)
+                            .frame(width: 7, height: 7)
+                    }
+                }
+                Text(mode.targetLabel)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(Theme.textSecondary)
+                Text(mode.pickerBlurb)
+                    .font(.system(size: 9))
+                    .foregroundStyle(Theme.textSecondary.opacity(0.8))
+                    .lineLimit(2)
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isSelected ? Theme.accentDim : Color.white.opacity(0.02))
+            .overlay(RoundedRectangle(cornerRadius: 6)
+                .stroke(isSelected ? Theme.accent : Theme.glassBorder, lineWidth: isSelected ? 1.5 : 1))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 

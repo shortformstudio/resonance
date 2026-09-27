@@ -609,7 +609,7 @@ h1, .card-value, .status-label, .card-title {
 
 .batch-item {
     display: grid;
-    grid-template-columns: 1fr auto auto;
+    grid-template-columns: 1fr auto auto auto;
     gap: 12px;
     align-items: center;
     padding: 8px 12px;
@@ -648,5 +648,135 @@ h1, .card-value, .status-label, .card-title {
 .batch-item-status.ready { color: #8ab4ff; }
 .batch-item-status.done  { color: #4ade80; background: rgba(74,222,128,0.12); }
 .batch-item-status.error { color: #f87171; background: rgba(248,113,113,0.12); }
+.batch-item-mode {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--glass-border);
+    border-radius: 6px;
+    color: var(--accent);
+    font-size: 10px;
+    font-family: var(--font-mono);
+    padding: 2px 4px;
+    cursor: pointer;
+}
 
 .hidden { display: none !important; }
+
+/* ============================================================ */
+/* MASTER OPTIONS — engine cards before print                   */
+/* ============================================================ */
+.master-options {
+    width: 100%;
+    max-width: 900px;
+    padding: 22px 26px 18px;
+    border-radius: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.mode-panel-header {
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 5px;
+    color: var(--accent);
+    text-transform: uppercase;
+}
+.mode-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+}
+.mode-card {
+    text-align: left;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    cursor: pointer;
+    color: var(--text-primary);
+    transition: background 0.2s, border-color 0.2s;
+    font-family: var(--font-main);
+}
+.mode-card:hover { background: rgba(212, 175, 55, 0.06); }
+.mode-card.selected {
+    background: rgba(212, 175, 55, 0.10);
+    border: 1.5px solid var(--accent);
+    box-shadow: 0 0 18px rgba(212, 175, 55, 0.25);
+}
+.mode-card-top {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 3px;
+}
+.mode-card-name {
+    font-size: 12px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    letter-spacing: 0.06em;
+}
+.mode-card.selected .mode-card-name { color: var(--accent); }
+.mode-card-star { color: var(--accent); font-size: 10px; }
+.mode-card-state {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--text-secondary);
+}
+.mode-card-state.playing { color: var(--accent); }
+.mode-card-target {
+    font-size: 10px;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+}
+.mode-card-blurb {
+    font-size: 10px;
+    color: var(--text-secondary);
+    opacity: 0.85;
+    margin-top: 2px;
+}
+.mode-detail {
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--text-primary);
+    opacity: 0.9;
+    border-left: 1px solid var(--accent-dim);
+    padding-left: 12px;
+}
+.mode-detail .chain-stage { margin-bottom: 2px; }
+.mode-detail .chain-stage b { color: var(--accent); font-weight: 600; }
+.mode-footnote {
+    font-size: 10px;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+}
+
+/* ============================================================ */
+/* SINGLE-BLURB CHAT — one bubble viewport, dots, fade          */
+/* ============================================================ */
+.chat-viewport { position: relative; min-height: 90px; }
+.chat-viewport .chat-bubble { animation: bubble-fade 0.62s ease-in-out; }
+@keyframes bubble-fade {
+    from { opacity: 0; transform: scale(0.98); }
+    to   { opacity: 1; transform: scale(1); }
+}
+.chat-dots {
+    display: flex;
+    justify-content: center;
+    gap: 5px;
+    padding: 6px 0 2px;
+}
+.chat-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.2);
+    cursor: pointer;
+}
+.chat-dot.active { background: var(--accent); }
+.chat-pause {
+    margin-left: 6px;
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 10px;
+}

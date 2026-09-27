@@ -1,6 +1,7 @@
 import sys
 import json
 import os
+import tempfile
 import traceback
 import shutil
 
@@ -20,9 +21,12 @@ except ImportError as e:
 EXPORT_DIR = os.environ.get("RESONANCE_EXPORT_DIR", "/Users/stevenjackson/Documents/Sound")
 AB_DIR = os.path.join(EXPORT_DIR, "AB sampling")
 
+# 10-second audition previews (middle slice, every engine).
+PREVIEW_DIR = os.path.join(tempfile.gettempdir(), "resonance-previews")
+
 def main():
     if len(sys.argv) < 2:
-        print(json.dumps({"error": "No command provided. Use 'analyze' or 'master'."}))
+        print(json.dumps({"error": "No command provided. Use 'analyze', 'master' or 'preview'."}))
         sys.exit(1)
 
     command = sys.argv[1]
@@ -38,7 +42,7 @@ def main():
             print(json.dumps(report))
 
         elif command == "master":
-            # master <input_path> <output_path> <metrics_json>
+            # master <input_path> <output_path> <metrics_json> [mode]
             if len(sys.argv) < 5:
                 print(json.dumps({"error": "Insufficient arguments for mastering."}))
                 sys.exit(1)
@@ -46,14 +50,15 @@ def main():
             input_path = sys.argv[2]
             requested_output = sys.argv[3]
             metrics = json.loads(sys.argv[4])
+            mode = sys.argv[5] if len(sys.argv) > 5 else "resonance_v2"
 
             # Force all exports into the central Sound folder, regardless of
             # where the source track lives.
             os.makedirs(EXPORT_DIR, exist_ok=True)
             output_path = os.path.join(EXPORT_DIR, os.path.basename(requested_output))
 
-            # Unified Hybrid Mastering Engine
-            executor = MasteringExecutor()
+            # Unified Hybrid Mastering Engine (mode-aware).
+            executor = MasteringExecutor(mode=mode)
             executor.apply_compensation(input_path, output_path, metrics)
 
             # --- Original reference alongside the master (unique per track) ---
@@ -94,6 +99,40 @@ def main():
             if ab_warning:
                 result["ab_warning"] = ab_warning
             print(json.dumps(result))
+
+        elif command == "preview":
+            # preview <input_path> <metrics_json> — middle 10s in every engine.
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "Insufficient arguments for preview."}))
+                sys.exit(1)
+            import soundfile as sf
+            import numpy as np
+
+            input_path = sys.argv[2]
+            metrics = json.loads(sys.argv[3])
+
+            engine = AudioAnalysisEngine(input_path)
+            data, rate = engine.data, engine.rate
+            total = data.shape[0]
+            want = min(total, int(10 * rate))
+            start = max(0, (total - want) // 2)
+            sl = data[start:start + want]
+
+            os.makedirs(PREVIEW_DIR, exist_ok=True)
+            stem = os.path.splitext(os.path.basename(input_path))[0]
+            slice_path = os.path.join(PREVIEW_DIR, f"{stem}-slice.wav")
+            sf.write(slice_path, sl, rate, subtype="PCM_16")
+
+            previews = {}
+            for m in ("resonance_v2", "clear", "unified_hybrid_v1", "club", "ivory", "vox"):
+                out = os.path.join(PREVIEW_DIR, f"{stem}-preview-{m}.wav")
+                MasteringExecutor(mode=m).apply_compensation(slice_path, out, metrics)
+                previews[m] = out
+            try:
+                os.remove(slice_path)
+            except OSError:
+                pass
+            print(json.dumps({"previews": previews}))
 
         else:
             print(json.dumps({"error": f"Unknown command: {command}"}))

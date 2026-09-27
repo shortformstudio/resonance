@@ -39,35 +39,296 @@ let currentAnalysis = null;
 let masterHistory = [];
 
 // Batch state — each entry is a track with its own analysis + master output.
-let batchTracks = [];   // { path, name, status, analysis, outputPath }
+let batchTracks = [];   // { path, name, status, analysis, outputPath, mode }
 let isBatchRunning = false;
 
-// --- Mastering Assistant chat (all advice appears here, above the analysis) ---
+// ================= ENGINE MODES =================
+// Six engines, picked before print. Ids match engine_cli modes + meta.json.
+const MODE_META = [
+    { id: 'resonance_v2',     name: 'core',  target: '-14 balanced',   blurb: 'balanced modern master' },
+    { id: 'clear',            name: 'pure',  target: '-14 transparent', blurb: 'transparent acoustic finish' },
+    { id: 'unified_hybrid_v1', name: 'heat', target: '-14 vintage',    blurb: 'vintage hybrid warmth' },
+    { id: 'club',             name: 'club',  target: '-8 loud',        blurb: 'loud club print' },
+    { id: 'ivory',            name: 'ivory', target: '-14 piano',      blurb: 'gentle piano voicing' },
+    { id: 'vox',              name: 'vox',   target: '-14 vocal',      blurb: 'forward vocal presence' },
+];
+let selectedMode = localStorage.getItem('resonanceEngine') || 'resonance_v2';
+if (!MODE_META.some(m => m.id === selectedMode)) selectedMode = 'resonance_v2';
+
+function modeName(id) {
+    const m = MODE_META.find(m => m.id === id);
+    return m ? m.name : id;
+}
+
+/** Suggested engine for the current read (★ badge). */
+function getRecommendedMode(metrics) {
+    if (!metrics) return 'resonance_v2';
+    if (metrics.correlation < 0.6 || metrics.spectral_slope < 1.1) return 'clear';
+    if (metrics.integrated_lufs > -9) return 'club';
+    return 'resonance_v2';
+}
+
+/** Per-mode processing chain detail for the current read. */
+function getChainForMode(modeId, metrics) {
+    const m = metrics || {};
+    const slope = m.spectral_slope, lufs = m.integrated_lufs, corr = m.correlation;
+    const mud = (m.mud_center_hz != null && isFinite(m.mud_center_hz))
+        ? `Mud Cut @ ${Math.round(m.mud_center_hz)}Hz` : 'Mud Cut';
+    const wide = corr > 0.7 ? 'M/S Expansion' : (corr < 0.6 ? 'Sub Mono-Fold' : 'Image Hold');
+    const glueSoft = lufs > -12 ? '1.2:1 Soft Knee' : '1.5:1 Soft Knee';
+    const heatSoft = lufs < -18 ? '+1.5dB Drive' : '+1.0dB Drive';
+    const hpfSoft = slope > 1.4 ? '35Hz HPF' : '30Hz HPF';
+    const airSoft = slope > 1.4 ? mud : 'Air Excitation';
+    switch (modeId) {
+        case 'clear':
+            return [['Sub-Sonic Control', '40Hz HPF ×2'], ['Organic Heat', 'no saturation'],
+                    ['Spectral Balancing', '450Hz unmask · 12kHz air'], ['Spatial Width', 'Image Hold'],
+                    ['Program Glue', '1.15:1 Transparent'], ['Final Offset', '→ -14.0 LUFS exact']];
+        case 'unified_hybrid_v1':
+            return [['Sub-Sonic Control', hpfSoft], ['Organic Heat', heatSoft],
+                    ['Spectral Balancing', slope > 1.4 ? mud : 'Air Excitation'],
+                    ['Spatial Width', corr < 0.6 ? 'Sub Mono-Fold' : 'Image Hold'],
+                    ['Program Glue', glueSoft], ['Final Offset', '→ -14.0 LUFS exact']];
+        case 'club':
+            return [['Sub-Sonic Control', '30Hz HPF'], ['Organic Heat', '+2.5dB Drive'],
+                    ['Spectral Balancing', slope > 1.4 ? mud : 'Air +4dB'],
+                    ['Spatial Width', wide], ['Program Glue', '2.0:1 Club Glue'],
+                    ['Final Offset', '→ -8.0 LUFS exact']];
+        case 'ivory':
+            return [['Sub-Sonic Control', '25Hz HPF'], ['Organic Heat', 'no saturation'],
+                    ['Spectral Balancing', slope > 1.6 ? mud : 'Air +2dB'],
+                    ['Spatial Width', 'Image Hold'], ['Program Glue', '1.15:1 Transparent'],
+                    ['Final Offset', '→ -14.0 LUFS exact']];
+        case 'vox':
+            return [['Sub-Sonic Control', '80Hz HPF'], ['Organic Heat', '+1.0dB Drive'],
+                    ['Spectral Balancing', '3kHz presence · 12kHz air'],
+                    ['Spatial Width', 'Center Focus'], ['Program Glue', '1.3:1 Vocal Glue'],
+                    ['Final Offset', '→ -14.0 LUFS exact']];
+        default:
+            return [['Sub-Sonic Control', hpfSoft], ['Organic Heat', heatSoft],
+                    ['Spectral Balancing', airSoft], ['Spatial Width', wide],
+                    ['Program Glue', glueSoft], ['Final Offset', '→ -14.0 LUFS exact']];
+    }
+}
+
+function renderModeGrid() {
+    const grid = document.getElementById('mode-grid');
+    if (!grid) return;
+    const suggested = currentAnalysis ? getRecommendedMode(currentAnalysis.metrics) : null;
+    const map = currentPreviewMap();
+    grid.innerHTML = '';
+    MODE_META.forEach(meta => {
+        const card = document.createElement('button');
+        card.className = `mode-card${meta.id === selectedMode ? ' selected' : ''}`;
+        let stateIcon = '<span class="mode-card-state">○</span>';
+        if (playingPreviewMode === meta.id) stateIcon = '<span class="mode-card-state playing">❚❚</span>';
+        else if (previewGenerating && previewProgressMode === meta.id) stateIcon = '<span class="mode-card-state">…</span>';
+        else if (map[meta.id]) stateIcon = '<span class="mode-card-state">▶</span>';
+        card.innerHTML = `
+            <div class="mode-card-top">
+                <span class="mode-card-name">${meta.name}</span>
+                ${suggested === meta.id ? '<span class="mode-card-star">★</span>' : ''}
+                ${stateIcon}
+            </div>
+            <div class="mode-card-target">${meta.target}</div>
+            <div class="mode-card-blurb">${meta.blurb}</div>`;
+        card.onclick = () => selectMode(meta.id);
+        grid.appendChild(card);
+    });
+}
+
+function renderModeDetail() {
+    const detail = document.getElementById('mode-detail');
+    if (!detail) return;
+    if (!currentAnalysis) {
+        detail.innerHTML = 'pick an engine, then drop a track — tapping any card auditions 10 seconds.';
+        return;
+    }
+    const chain = getChainForMode(selectedMode, currentAnalysis.metrics);
+    detail.innerHTML = chain.map(([name, item]) =>
+        `<div class="chain-stage"><b>${escapeText(name)}:</b> ${escapeText(item)}</div>`).join('');
+}
+
+function updatePreviewIndicators() {
+    renderModeGrid();
+    const footnote = document.getElementById('mode-footnote');
+    if (footnote) {
+        footnote.textContent = playingPreviewMode != null
+            ? 'auditioning 10 sec — middle slice'
+            : (previewGenerating ? 'rendering 10 sec preview…' : 'tap to audition 10 sec');
+    }
+}
+
+/** Pick an engine: persist, push to pending batch tracks, audition it. */
+function selectMode(id) {
+    selectedMode = id;
+    try { localStorage.setItem('resonanceEngine', id); } catch (e) {}
+    batchTracks.forEach(t => {
+        if (t.status === 'queued' || t.status === 'ready') t.mode = id;
+    });
+    renderBatchList();
+    renderModeDetail();
+    updatePreviewIndicators();
+    addLog(`Engine switched to ${modeName(id)}`);
+    playPreview(id);
+}
+
+function initModeSelector() {
+    renderModeGrid();
+    renderModeDetail();
+    updatePreviewIndicators();
+}
+
+// ================= AUDITION PREVIEWS =================
+// Middle 10 seconds, every engine. Played back via <audio>.
+let previewMap = {};         // single-track: mode -> path
+let batchPreviewStore = {};  // trackName -> { mode -> path }
+let previewAudio = null;
+let previewGenerating = false;
+let previewProgressMode = null;
+let playingPreviewMode = null;
+
+function currentPreviewMap() {
+    if (batchTracks.length && currentAnalysis && batchPreviewStore[currentAnalysis.title]) {
+        return batchPreviewStore[currentAnalysis.title];
+    }
+    return previewMap;
+}
+
+function stopPreview() {
+    if (previewAudio) { try { previewAudio.pause(); } catch (e) {} previewAudio = null; }
+    playingPreviewMode = null;
+    updatePreviewIndicators();
+}
+
+async function generatePreviews(filePath, metrics, trackName) {
+    previewGenerating = true;
+    previewProgressMode = null;
+    updatePreviewIndicators();
+    try {
+        const res = await window.api.runEngine(['preview', filePath, JSON.stringify(metrics)]);
+        const map = (res && res.previews) || {};
+        if (trackName) batchPreviewStore[trackName] = map;
+        else previewMap = map;
+        if (Object.keys(map).length) {
+            setAssistantStatus('previews ready · tap an engine to audition');
+            addLog(`10-sec previews ready (${Object.keys(map).length} engines).`);
+        }
+    } catch (err) {
+        addLog(`Preview render failed: ${err.message}`);
+    }
+    previewGenerating = false;
+    previewProgressMode = null;
+    updatePreviewIndicators();
+}
+
+function playPreview(modeId) {
+    const map = currentPreviewMap();
+    const path = map[modeId];
+    if (!path) return;
+    if (playingPreviewMode === modeId && previewAudio && !previewAudio.paused) {
+        stopPreview();
+        return;
+    }
+    stopPreview();
+    previewAudio = new Audio(`file://${path}`);
+    previewAudio.onended = () => stopPreview();
+    previewAudio.play().catch(err => addLog(`Preview playback failed: ${err.message}`));
+    playingPreviewMode = modeId;
+    setAssistantStatus('auditioning 10 sec — middle slice');
+    updatePreviewIndicators();
+}
+
+// --- Mastering Assistant chat: single-blurb viewport (one bubble at a time) ---
 const CHAT_TONE_ICON = {
     greeting: '◉', insight: '✳', good: '✓', caution: '⚠', plan: '➤', working: '⟳', done: '✓',
 };
+
+let allChatBubbles = [];   // { text, tone, title }
+let visibleChatIdx = 0;
+let chatCycleTimer = null;
+let chatPaused = false;
 
 function setAssistantStatus(text) {
     if (assistantStatus) assistantStatus.textContent = text;
 }
 
-/** Append one chat bubble. Markdown-lite: **bold** becomes <strong>. */
-function addChatBubble(text, tone = 'insight', title = null) {
+function chatDotsEl() {
+    let dots = document.getElementById('chat-dots');
+    if (!dots && chatStream) {
+        dots = document.createElement('div');
+        dots.id = 'chat-dots';
+        dots.className = 'chat-dots';
+        chatStream.after(dots);
+    }
+    return dots;
+}
+
+/** Paint exactly one bubble with a soft fade, plus 1/N dots. */
+function renderVisibleBubble() {
     if (!chatStream) return;
-    const bubble = document.createElement('div');
-    bubble.className = `chat-bubble ${tone}`;
-    const safe = escapeText(text).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-    const icon = CHAT_TONE_ICON[tone] || '✳';
-    bubble.innerHTML = `
-        ${title ? `<div class="bubble-title"><span class="bubble-icon">${icon}</span>${escapeText(title)}</div>` : ''}
-        <p>${safe}</p>`;
-    chatStream.appendChild(bubble);
-    chatStream.scrollTop = chatStream.scrollHeight;
-    return bubble;
+    chatStream.innerHTML = '';
+    const bubble = allChatBubbles[visibleChatIdx];
+    if (bubble) {
+        const safe = escapeText(bubble.text).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        const icon = CHAT_TONE_ICON[bubble.tone] || '✳';
+        const div = document.createElement('div');
+        div.className = `chat-bubble ${bubble.tone}`;
+        div.innerHTML = `
+            ${bubble.title ? `<div class="bubble-title"><span class="bubble-icon">${icon}</span>${escapeText(bubble.title)}</div>` : ''}
+            <p>${safe}</p>`;
+        div.onclick = () => advanceChat();
+        chatStream.appendChild(div);
+    }
+    const dots = chatDotsEl();
+    if (dots) {
+        dots.innerHTML = '';
+        if (allChatBubbles.length > 1) {
+            allChatBubbles.forEach((_, i) => {
+                const d = document.createElement('span');
+                d.className = `chat-dot${i === visibleChatIdx ? ' active' : ''}`;
+                d.onclick = () => { visibleChatIdx = i; renderVisibleBubble(); };
+                dots.appendChild(d);
+            });
+            const pause = document.createElement('button');
+            pause.className = 'chat-pause';
+            pause.textContent = chatPaused ? '▶' : '❚❚';
+            pause.onclick = (e) => { e.stopPropagation(); chatPaused = !chatPaused; renderVisibleBubble(); };
+            dots.appendChild(pause);
+        }
+    }
+}
+
+function advanceChat() {
+    if (!allChatBubbles.length) return;
+    visibleChatIdx = (visibleChatIdx + 1) % allChatBubbles.length;
+    renderVisibleBubble();
+}
+
+function startChatCycle() {
+    stopChatCycle();
+    chatCycleTimer = setInterval(() => {
+        if (chatPaused || isBatchRunning) return;
+        advanceChat();
+    }, 5800);
+}
+
+function stopChatCycle() {
+    if (chatCycleTimer) clearInterval(chatCycleTimer);
+    chatCycleTimer = null;
+}
+
+/** Append one chat bubble; single-append jumps to newest. */
+function addChatBubble(text, tone = 'insight', title = null) {
+    allChatBubbles.push({ text, tone, title });
+    visibleChatIdx = allChatBubbles.length - 1;
+    renderVisibleBubble();
 }
 
 function clearChat() {
-    if (chatStream) chatStream.innerHTML = '';
+    allChatBubbles = [];
+    visibleChatIdx = 0;
+    renderVisibleBubble();
 }
 
 function escapeText(s) {
@@ -78,14 +339,16 @@ function escapeText(s) {
 /** Render the assistant's conversational read from an analysis result. */
 function renderAssistantChat(analysis, trackName) {
     clearChat();
-    if (trackName) addChatBubble(`on it — reading **${trackName}** now.`, 'greeting');
+    if (trackName) allChatBubbles.push({ text: `on it — reading **${trackName}** now.`, tone: 'greeting' });
     const chat = (analysis && analysis.chat) || [];
     if (chat.length) {
-        chat.forEach(b => addChatBubble(b.text, b.tone || 'insight', b.title));
+        chat.forEach(b => allChatBubbles.push({ text: b.text, tone: b.tone || 'insight', title: b.title }));
     } else if (analysis && analysis.perspective) {
         // Fallback for older engine output.
-        addChatBubble(analysis.perspective, 'insight', "here's the read");
+        allChatBubbles.push({ text: analysis.perspective, tone: 'insight', title: "here's the read" });
     }
+    visibleChatIdx = 0; // wholesale rebuild resets to the top
+    renderVisibleBubble();
     setAssistantStatus('analysis ready · your call');
 }
 
@@ -218,25 +481,17 @@ function addLog(message) {
 
 function updateProposedCompensation() {
     if (!currentAnalysis) return;
-    
-    proposedChain.innerHTML = '';
-    const metrics = currentAnalysis.metrics;
-    
-    const chain = [
-        { name: 'Sub-Sonic Control', detail: metrics.spectral_slope > 1.4 ? '35Hz HPF' : '30Hz HPF' },
-        { name: 'Organic Heat', detail: metrics.integrated_lufs < -18 ? '+1.5dB Drive' : '+1.0dB Drive' },
-        { name: 'Spectral Balancing', detail: metrics.spectral_slope > 1.4 ? 'Mud Unmasking' : 'Air Excitation' },
-        { name: 'Spatial Width', detail: metrics.correlation > 0.7 ? 'Phase-Safe Expansion' : 'Image Focus' },
-        { name: 'Program Glue', detail: metrics.integrated_lufs > -12 ? '1.2:1 Comp' : '1.5:1 Comp' },
-        { name: 'Final Offset', detail: `${(-14.0 - metrics.integrated_lufs).toFixed(1)}dB Gain` }
-    ];
 
-    chain.forEach(item => {
+    proposedChain.innerHTML = '';
+    const chain = getChainForMode(selectedMode, currentAnalysis.metrics);
+
+    chain.forEach(([name, detail]) => {
         const div = document.createElement('div');
         div.className = 'audit-item';
-        div.innerHTML = `<div class="metric-line">${item.name}: <span>${item.detail}</span></div>`;
+        div.innerHTML = `<div class="metric-line">${escapeText(name)}: <span>${escapeText(detail)}</span></div>`;
         proposedChain.appendChild(div);
     });
+    renderModeDetail();
 }
 
 function generateEngineerComments(metrics) {
@@ -271,9 +526,11 @@ async function runAnalysis() {
         renderAssistantChat(result, result.title);
 
         paintAnalysis(result);
+        renderModeGrid();
 
         addLog('DNA mapped. Hybrid compensation plan initialized.');
         btnExecute.disabled = false;
+        generatePreviews(currentFilePath, result.metrics, null);
     } catch (err) {
         console.error('Analysis Error:', err);
         addLog(`CRITICAL: ${err.message}`);
@@ -310,7 +567,10 @@ function paintAnalysis(result) {
 async function handleFileSelection(filePath) {
     currentFilePath = filePath;
     addLog(`Target: ${filePath.split(/[\\/]/).pop()}`);
-    
+
+    stopPreview();
+    previewMap = {};
+    updatePreviewIndicators();
     loadingBarContainer.classList.remove('hidden');
     trackMetadata.classList.add('hidden');
     loadingBar.style.width = '0%';
@@ -364,7 +624,10 @@ function loadBatch(paths) {
         status: 'queued',      // queued | analyzing | ready | mastering | done | error
         analysis: null,
         outputPath: null,
+        mode: selectedMode,
     }));
+    batchPreviewStore = {};
+    stopPreview();
     batchQueueEl.classList.remove('hidden');
     btnBatchMaster.classList.remove('hidden');
     btnExecute.classList.add('hidden');
@@ -407,6 +670,19 @@ function renderBatchList() {
             <span class="batch-item-name" title="${escapeText(track.path)}">${escapeText(track.name)}</span>
             <span class="batch-item-metrics">${metricPreview}</span>
             <span class="batch-item-status ${track.status}">${BATCH_STATUS_LABEL[track.status] || track.status}</span>`;
+        const modeSelect = document.createElement('select');
+        modeSelect.className = 'batch-item-mode';
+        modeSelect.title = 'Engine for this track';
+        MODE_META.forEach(meta => {
+            const opt = document.createElement('option');
+            opt.value = meta.id;
+            opt.textContent = meta.name;
+            if (track.mode === meta.id) opt.selected = true;
+            modeSelect.appendChild(opt);
+        });
+        modeSelect.onchange = () => { track.mode = modeSelect.value; };
+        modeSelect.onclick = (e) => e.stopPropagation();
+        row.appendChild(modeSelect);
         row.onclick = () => {
             if (track.analysis) showTrackRead(track);
             if (track.outputPath && track.status === 'done') window.api.showItemInFolder(track.outputPath);
@@ -418,9 +694,12 @@ function renderBatchList() {
 function showTrackRead(track) {
     currentAnalysis = track.analysis;
     currentFilePath = track.path;
+    stopPreview();
     // Repaint metrics + audit for the tapped track.
     paintAnalysis(track.analysis);
     renderAssistantChat(track.analysis, track.name);
+    renderModeGrid();
+    updatePreviewIndicators();
 }
 
 async function analyzeBatchSequentially() {
@@ -434,6 +713,7 @@ async function analyzeBatchSequentially() {
             if (result.error) throw new Error(result.error);
             track.analysis = result;
             track.status = 'ready';
+            generatePreviews(track.path, result.metrics, track.name);
         } catch (err) {
             track.status = 'error';
             addLog(`Analysis failed for ${track.name}: ${err.message}`);
@@ -455,19 +735,21 @@ async function runBatchMaster() {
     if (isBatchRunning) return;
     isBatchRunning = true;
     btnBatchMaster.disabled = true;
-    addChatBubble(`starting the batch. i'll tailor each master to its own analysis — the loud ones get eased off, the dark ones get lifted. sit back.`, 'working', 'mastering all');
+    addChatBubble(`starting the batch with **${modeName(selectedMode)}**. i'll tailor each master to its own analysis — the loud ones get eased off, the dark ones get lifted. sit back.`, 'working', 'mastering all');
 
     for (const track of batchTracks) {
         if (!track.analysis) continue;
+        const trackMode = track.mode || selectedMode;
         track.status = 'mastering';
         renderBatchList();
         setAssistantStatus(`mastering ${track.name}…`);
+        addLog(`MASTER: ${track.name} [${modeName(trackMode)}]`);
         try {
             const baseName = track.name.replace(/\.[^/.]+$/, '');
             // Engine forces export into ~/Documents/Sound; we only supply the name.
             const outputPath = `UNIFIED_MASTER_${baseName}.wav`;
             const metricsJson = JSON.stringify(track.analysis.metrics);
-            const res = await window.api.runEngine(['master', track.path, outputPath, metricsJson]);
+            const res = await window.api.runEngine(['master', track.path, outputPath, metricsJson, trackMode]);
             track.outputPath = (res && res.output_path) || outputPath;
             track.abPath = res && res.ab_sample_path;
             track.status = 'done';
@@ -494,7 +776,7 @@ if (btnBatchMaster) btnBatchMaster.addEventListener('click', runBatchMaster);
 btnExecute.addEventListener('click', async () => {
     if (!currentAnalysis) return;
 
-    addLog(`Initiating UNIFIED processing sequence...`);
+    addLog(`Initiating ${modeName(selectedMode)} processing sequence...`);
     btnExecute.disabled = true;
 
     try {
@@ -505,8 +787,8 @@ btnExecute.addEventListener('click', async () => {
         const metricsJson = JSON.stringify(currentAnalysis.metrics);
 
         addLog(`Applying Hybrid Analog Compensation...`);
-        addChatBubble(`printing your master now — tailored to this track's read. one sec.`, 'working', 'mastering');
-        const res = await window.api.runEngine(['master', currentFilePath, outputPath, metricsJson]);
+        addChatBubble(`printing your master now with **${modeName(selectedMode)}** — tailored to this track's read. one sec.`, 'working', 'mastering');
+        const res = await window.api.runEngine(['master', currentFilePath, outputPath, metricsJson, selectedMode]);
 
         const finalPath = (res && res.output_path) || outputPath;
         addToHistory(`MASTER: ${baseName}`, finalPath);
@@ -549,6 +831,8 @@ document.querySelectorAll('.metric-card').forEach(card => {
 window.addEventListener('load', () => {
     initThree();
     updateHistoryUI();
+    initModeSelector();
+    startChatCycle();
 });
 window.addEventListener('resize', () => {
     if (camera && renderer) {

@@ -180,9 +180,12 @@ struct MasteringEngine {
 
     func render(mode: MasteringMode, input: URL, output: URL, metrics: Metrics) throws -> URL {
         switch mode {
-        case .resonanceV2: return try applyCompensation(input: input, output: output, metrics: metrics)
-        case .clear:        return try clearRender(input: input, output: output, metrics: metrics)
-        case .unifiedHybridV1: return try v1LegacyRender(input: input, output: output, metrics: metrics)
+        case .core:  return try applyCompensation(input: input, output: output, metrics: metrics)
+        case .pure:  return try clearRender(input: input, output: output, metrics: metrics)
+        case .heat:  return try v1LegacyRender(input: input, output: output, metrics: metrics)
+        case .club:  return try clubRender(input: input, output: output, metrics: metrics)
+        case .ivory: return try ivoryRender(input: input, output: output, metrics: metrics)
+        case .vox:   return try voxRender(input: input, output: output, metrics: metrics)
         }
     }
 
@@ -430,7 +433,191 @@ struct MasteringEngine {
         try WavWriter.write(channels: out, sampleRate: fs, to: output, bitDepth: 24)
         return output
     }
+
+    // MARK: shared closed-loop finish (measure, trim, limit, re-measure)
+
+    /// Lands the work buffer exactly on target, then writes it. Used by the
+    /// newer renders; the original three keep their inline finishing stages.
+    private func closedLoopFinish(work: [[Double]], fs: Double, target: Double, output: URL) throws -> URL {
+        let channels = work.count
+        let frames = work.first?.count ?? 0
+        let preLufs = Loudness.integratedLufs(buffer: AudioBuffer(channels: work, sampleRate: fs))
+        var trimDb = target - preLufs
+        var out = work
+        for _ in 0..<3 {
+            out = work
+            let g = pow(10, trimDb / 20)
+            for c in 0..<channels {
+                var scale = g
+                vDSP_vsmulD(out[c], 1, &scale, &out[c], 1, vDSP_Length(frames))
+            }
+            TruePeakLimiter.limit(&out, fs: fs)
+            let measured = Loudness.integratedLufs(buffer: AudioBuffer(channels: out, sampleRate: fs))
+            let residual = target - measured
+            if abs(residual) < 0.05 { break }
+            trimDb += residual
+        }
+        try WavWriter.write(channels: out, sampleRate: fs, to: output, bitDepth: 24)
+        return output
+    }
+
+    // MARK: CLUB mode (loud club print, closed-loop -8 LUFS)
+
+    func clubRender(input: URL, output: URL, metrics: Metrics) throws -> URL {
+        let buffer = try AudioLoader.load(url: input)
+        let fs = buffer.sampleRate
+        let channels = buffer.channelCount
+        let frames = buffer.frameCount
+
+        let lufs = metrics.integratedLufs
+        let slope = metrics.spectralSlope
+        let corr = metrics.correlation
+
+        var hpf = (0..<channels).map { _ in Biquad.highPass(fs: fs, f0: 30, q: 0.7071) }
+
+        let doMonoSub = channels == 2 && corr < 0.6
+        let doWiden = channels == 2 && corr > 0.7
+        var sideHP = Biquad.highPass(fs: fs, f0: 120, q: 0.7071)
+        var sideSplit = OnePoleSplit(fs: fs, fc: 120)
+        let widthGain = pow(10, 1.2 / 20)
+
+        // Hotter drive for density; sub band still passes clean.
+        var subSplit = (0..<channels).map { _ in OnePoleSplit(fs: fs, fc: 150) }
+        var adaa = (0..<channels).map { _ in ADAATanh(driveDb: 2.5) }
+
+        let mudHz = metrics.mudCenterHz
+        var mudCut: [Biquad]? = slope > 1.4
+            ? (0..<channels).map { _ in Biquad.peak(fs: fs, f0: mudHz, gainDb: -2.5, q: 0.4) } : nil
+        var airShelf = (0..<channels).map { _ in Biquad.highShelf(fs: fs, f0: 12000, gainDb: 4.0, q: 0.7071) }
+        var bodyShelf: [Biquad]? = slope < 1.1
+            ? (0..<channels).map { _ in Biquad.lowShelf(fs: fs, f0: 200, gainDb: 2.0, q: 0.7071) } : nil
+
+        // Harder glue for club density.
+        let compRatio: Double = lufs > -12 ? 1.6 : 2.0
+        var comp = GlueCompressor(thresholdDb: -20, ratio: compRatio,
+                                  attackMs: 30, releaseMs: 150, fs: fs)
+
+        var work = buffer.channels
+        for i in 0..<frames {
+            for c in 0..<channels {
+                work[c][i] = hpf[c].process(work[c][i])
+            }
+
+            if doMonoSub || doWiden {
+                let l = work[0][i], r = work[1][i]
+                let midSample = (l + r) / 2
+                var side = (l - r) / 2
+                if doMonoSub { side = sideHP.process(side) }
+                if doWiden {
+                    let lowSide = sideSplit.low(side)
+                    side = lowSide + (side - lowSide) * widthGain
+                }
+                work[0][i] = midSample + side
+                work[1][i] = midSample - side
+            }
+
+            var meanSquare = 0.0
+            for c in 0..<channels {
+                var s = work[c][i]
+                let sub = subSplit[c].low(s)
+                s = sub + adaa[c].process(s - sub)
+                if mudCut != nil { s = mudCut![c].process(s) }
+                s = airShelf[c].process(s)
+                if bodyShelf != nil { s = bodyShelf![c].process(s) }
+                work[c][i] = s
+                meanSquare += s * s
+            }
+            let g = comp.gain(meanSquare: meanSquare / Double(channels))
+            for c in 0..<channels { work[c][i] *= g }
+        }
+
+        return try closedLoopFinish(work: work, fs: fs, target: MasteringMode.club.targetLufs, output: output)
+    }
+
+    // MARK: IVORY mode (gentle piano voicing, closed-loop -14 LUFS)
+
+    func ivoryRender(input: URL, output: URL, metrics: Metrics) throws -> URL {
+        let buffer = try AudioLoader.load(url: input)
+        let fs = buffer.sampleRate
+        let channels = buffer.channelCount
+        let frames = buffer.frameCount
+
+        let slope = metrics.spectralSlope
+
+        // Soft 25Hz high-pass; transients pass untouched.
+        var hpf = (0..<channels).map { _ in Biquad.highPass(fs: fs, f0: 25, q: 0.7071) }
+
+        // Mud cut only for genuinely dark material.
+        let mudHz = metrics.mudCenterHz
+        var mudCut: [Biquad]? = slope > 1.6
+            ? (0..<channels).map { _ in Biquad.peak(fs: fs, f0: mudHz, gainDb: -2.0, q: 0.5) } : nil
+        var airShelf = (0..<channels).map { _ in Biquad.highShelf(fs: fs, f0: 12000, gainDb: 2.0, q: 0.7071) }
+
+        // Transparent leveling, not loudness.
+        var comp = GlueCompressor(thresholdDb: -18, ratio: 1.15, kneeDb: 6,
+                                  attackMs: 60, releaseMs: 250, fs: fs)
+
+        var work = buffer.channels
+        for i in 0..<frames {
+            var meanSquare = 0.0
+            for c in 0..<channels {
+                var s = work[c][i]
+                s = hpf[c].process(s)
+                if mudCut != nil { s = mudCut![c].process(s) }
+                s = airShelf[c].process(s)
+                work[c][i] = s
+                meanSquare += s * s
+            }
+            let g = comp.gain(meanSquare: meanSquare / Double(channels))
+            for c in 0..<channels { work[c][i] *= g }
+        }
+
+        return try closedLoopFinish(work: work, fs: fs, target: MasteringMode.ivory.targetLufs, output: output)
+    }
+
+    // MARK: VOX mode (forward vocal presence, closed-loop -14 LUFS)
+
+    func voxRender(input: URL, output: URL, metrics: Metrics) throws -> URL {
+        let buffer = try AudioLoader.load(url: input)
+        let fs = buffer.sampleRate
+        let channels = buffer.channelCount
+        let frames = buffer.frameCount
+
+        // 80Hz high-pass keeps rumble off the vocal range.
+        var hpf = (0..<channels).map { _ in Biquad.highPass(fs: fs, f0: 80, q: 0.7071) }
+
+        // Presence bell puts the voice on top; air shelf keeps it open.
+        var presence = (0..<channels).map { _ in Biquad.peak(fs: fs, f0: 3000, gainDb: 2.5, q: 1.0) }
+        var airShelf = (0..<channels).map { _ in Biquad.highShelf(fs: fs, f0: 12000, gainDb: 3.0, q: 0.7071) }
+
+        var subSplit = (0..<channels).map { _ in OnePoleSplit(fs: fs, fc: 150) }
+        var adaa = (0..<channels).map { _ in ADAATanh(driveDb: 1.0) }
+
+        var comp = GlueCompressor(thresholdDb: -20, ratio: 1.3, kneeDb: 6,
+                                  attackMs: 40, releaseMs: 180, fs: fs)
+
+        var work = buffer.channels
+        for i in 0..<frames {
+            var meanSquare = 0.0
+            for c in 0..<channels {
+                var s = work[c][i]
+                s = hpf[c].process(s)
+                let sub = subSplit[c].low(s)
+                s = sub + adaa[c].process(s - sub)
+                s = presence[c].process(s)
+                s = airShelf[c].process(s)
+                work[c][i] = s
+                meanSquare += s * s
+            }
+            let g = comp.gain(meanSquare: meanSquare / Double(channels))
+            for c in 0..<channels { work[c][i] *= g }
+        }
+
+        return try closedLoopFinish(work: work, fs: fs, target: MasteringMode.vox.targetLufs, output: output)
+    }
 }
+
+// MARK: - WAV output
 
 enum WavWriter {
     static func write(channels: [[Double]], sampleRate: Double, to url: URL, bitDepth: Int) throws {
