@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Resonance — Intelligent Audio Mastering Engine</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="resonance-viewport">
+        <!-- Top Navigation -->
+        <header class="app-header">
+            <div class="brand">
+                <span class="brand-symbol">◈</span>
+                <span class="brand-name">RESONANCE</span>
+                <span class="brand-tag">v3.0 WEB CLIENT</span>
+            </div>
+            <div class="header-status">
+                <span class="domain-pill">resonance.moonpond.org</span>
+                <span class="dsp-pill">48kHz / 64-BIT DSP</span>
+            </div>
+        </header>
+
+        <!-- Main Workspace -->
+        <main class="main-container">
+            <!-- Left Intake / Analysis Bar -->
+            <section class="side-column">
+                <!-- Drop Zone -->
+                <div id="drop-zone" class="glass drop-box">
+                    <input type="file" id="audio-input" accept="audio/*,.wav,.mp3,.m4a,.flac,.aiff" class="hidden-input">
+                    <div class="drop-icon">⏀</div>
+                    <div class="drop-title">AUDIO INTAKE</div>
+                    <div class="drop-sub">DROP TRACK HERE OR CLICK TO BROWSE</div>
+                    <div class="drop-types">WAV · MP3 · M4A · FLAC · AIFF</div>
+                </div>
+
+                <!-- Live Progress Bar -->
+                <div id="progress-container" class="progress-container hidden">
+                    <div class="progress-status-row">
+                        <span id="progress-step-text">PROCESSING AUDIO...</span>
+                        <span id="progress-percent">0%</span>
+                    </div>
+                    <div class="progress-bar-bg">
+                        <div id="progress-fill" class="progress-bar-fill"></div>
+                    </div>
+                </div>
+
+                <!-- Signal DNA Audit Readout -->
+                <div class="glass audit-card">
+                    <div class="card-header">
+                        <span>SIGNAL DNA AUDIT</span>
+                        <span id="audit-indicator" class="status-indicator ready">READY</span>
+                    </div>
+
+                    <div class="audit-metrics">
+                        <div class="metric-row">
+                            <span class="metric-label">INTEGRATED LOUDNESS</span>
+                            <span id="metric-lufs" class="metric-val">-- LUFS</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">TRUE PEAK</span>
+                            <span id="metric-peak" class="metric-val">-- dBTP</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">CREST FACTOR</span>
+                            <span id="metric-crest" class="metric-val">-- dB</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">STEREO CORRELATION</span>
+                            <span id="metric-corr" class="metric-val">--</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">SPECTRAL SLOPE</span>
+                            <span id="metric-slope" class="metric-val">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Dynamic Assistant Log -->
+                <div class="glass log-card">
+                    <div class="card-header">
+                        <span>DSP LOG</span>
+                        <span class="mono-dim">REAL-TIME</span>
+                    </div>
+                    <div id="dsp-log-stream" class="log-stream">
+                        <div class="log-entry">[00:00:00] Engine initialized. 64-bit Web DSP ready.</div>
+                        <div class="log-entry">[00:00:00] Drop track to scan Signal DNA.</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Center Stage: Waveform & Master Controls -->
+            <section class="stage-column">
+                <!-- Master Header / Waveform View -->
+                <div class="glass waveform-stage">
+                    <div class="waveform-header">
+                        <div>
+                            <span id="track-name" class="track-title">NO TRACK LOADED</span>
+                            <span id="track-meta" class="track-sub">--:-- · ---</span>
+                        </div>
+                        <div class="ab-switch-group">
+                            <button id="btn-play-orig" class="btn-ab" disabled>ORIGINAL</button>
+                            <button id="btn-play-master" class="btn-ab active-ab" disabled>MASTER</button>
+                            <button id="btn-stop-audio" class="btn-ab" disabled>■ STOP</button>
+                        </div>
+                    </div>
+
+                    <!-- Visual Canvas for Audio Waveform -->
+                    <div class="canvas-wrap">
+                        <canvas id="waveform-canvas" width="800" height="180"></canvas>
+                    </div>
+                </div>
+
+                <!-- Mastering Options & Engine Selector -->
+                <div class="glass master-options-card">
+                    <div class="options-header">
+                        <span class="options-title">HOW TO MASTER</span>
+                        
+                        <!-- Format Pick: WAV / MP3 -->
+                        <div class="format-toggle-group">
+                            <span class="format-label">FORMAT:</span>
+                            <button id="fmt-wav" class="fmt-chip active-fmt">WAV 24b</button>
+                            <button id="fmt-mp3" class="fmt-chip">MP3 320k</button>
+                        </div>
+                    </div>
+
+                    <!-- 3 Focused Modes -->
+                    <div class="modes-grid">
+                        <!-- CORE MODE -->
+                        <div id="mode-core" class="mode-card active-mode" data-mode="core">
+                            <div class="mode-card-header">
+                                <span class="mode-name">core</span>
+                                <span class="mode-star">★ RECOMMENDED</span>
+                            </div>
+                            <div class="mode-target">-14 balanced · -1 dBTP</div>
+                            <div class="mode-desc">
+                                Scanned reference EQ curve matching, linked 4-band dynamics, gentle ADAA tanh heat, and mono sub-bass.
+                            </div>
+                        </div>
+
+                        <!-- PURE MODE -->
+                        <div id="mode-pure" class="mode-card" data-mode="pure">
+                            <div class="mode-card-header">
+                                <span class="mode-name">pure</span>
+                            </div>
+                            <div class="mode-target">-16 transparent · -1 dBTP</div>
+                            <div class="mode-desc">
+                                Acoustic unmasking, wide-open dynamics, gentle mud suppression, no saturation or widening.
+                            </div>
+                        </div>
+
+                        <!-- CLUB MODE -->
+                        <div id="mode-club" class="mode-card" data-mode="club">
+                            <div class="mode-card-header">
+                                <span class="mode-name">club</span>
+                            </div>
+                            <div class="mode-target">-9 loud · -1 dBTP</div>
+                            <div class="mode-desc">
+                                Weighted bass plateau, tight program glue, hotter organic saturation, and maximum RMS density.
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Action Row -->
+                    <div class="action-footer">
+                        <div class="action-hint">
+                            <span id="engine-hint">CORE: balanced modern master with clean streaming headroom.</span>
+                        </div>
+                        <div class="action-buttons">
+                            <button id="btn-master" class="btn-primary" disabled>EXECUTE MASTER</button>
+                            <a id="btn-download" class="btn-download hidden" download="master.wav">DOWNLOAD MASTER</a>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Scripts -->
+    <script src="dsp.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
