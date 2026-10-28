@@ -5,7 +5,7 @@ import Accelerate
 
 extension Biquad {
     static func lowPass(fs: Double, f0: Double, q: Double) -> Biquad {
-        let w0 = 2 * Double.pi * f0 / fs
+        let w0 = 2 * Double.pi * Biquad.safeFrequency(f0, fs: fs) / fs
         let alpha = sin(w0) / (2 * q)
         let cw = cos(w0)
         return Biquad(b0: (1 - cw) / 2, b1: 1 - cw, b2: (1 - cw) / 2,
@@ -14,76 +14,11 @@ extension Biquad {
 
     /// Constant-0dB-peak-gain bandpass (detection sidechains).
     static func bandPass(fs: Double, f0: Double, q: Double) -> Biquad {
-        let w0 = 2 * Double.pi * f0 / fs
+        let w0 = 2 * Double.pi * Biquad.safeFrequency(f0, fs: fs) / fs
         let alpha = sin(w0) / (2 * q)
         let cw = cos(w0)
         return Biquad(b0: alpha, b1: 0, b2: -alpha,
                       a0: 1 + alpha, a1: -2 * cw, a2: 1 - alpha)
-    }
-}
-
-// MARK: - Per-mode dynamics configuration
-
-/// One place where every engine's dynamics behavior is decided.
-struct ModeDynamics {
-    var mbThresholdsDb: [Double]  // sub, low, mid, high
-    var mbRatios: [Double]
-    var mbAttackMs: Double
-    var mbReleaseMs: Double
-    var clipDriveDb: Double       // <= 0.05 bypasses the clipper
-    var clipCeilingDb: Double
-    var transientAttack: Double   // -1 ... 1
-    var transientSustain: Double  // -1 ... 1
-    var upwardDepth: Double       // 0 ... 1
-    var upwardMix: Double         // 0 ... 1 parallel blend
-    var suppressDepth: Double     // 0 ... 1 resonance tamer
-    var sectionTrimDb: Double     // max adaptive section trim
-
-    static func forMode(_ mode: MasteringMode) -> ModeDynamics {
-        switch mode {
-        case .core:
-            return ModeDynamics(mbThresholdsDb: [-22, -20, -20, -24], mbRatios: [1.6, 1.6, 1.6, 1.6],
-                                mbAttackMs: 30, mbReleaseMs: 200,
-                                clipDriveDb: 1.5, clipCeilingDb: -1.0,
-                                transientAttack: 0.25, transientSustain: 0.0,
-                                upwardDepth: 0.35, upwardMix: 0.25,
-                                suppressDepth: 0.5, sectionTrimDb: 1.5)
-        case .pure:
-            return ModeDynamics(mbThresholdsDb: [-22, -20, -20, -24], mbRatios: [1.4, 1.4, 1.4, 1.4],
-                                mbAttackMs: 40, mbReleaseMs: 250,
-                                clipDriveDb: 0.0, clipCeilingDb: -1.0,
-                                transientAttack: 0.15, transientSustain: 0.0,
-                                upwardDepth: 0.3, upwardMix: 0.2,
-                                suppressDepth: 0.7, sectionTrimDb: 1.0)
-        case .heat:
-            return ModeDynamics(mbThresholdsDb: [-22, -20, -20, -24], mbRatios: [1.5, 1.5, 1.5, 1.5],
-                                mbAttackMs: 35, mbReleaseMs: 220,
-                                clipDriveDb: 2.0, clipCeilingDb: -1.0,
-                                transientAttack: 0.2, transientSustain: 0.1,
-                                upwardDepth: 0.4, upwardMix: 0.3,
-                                suppressDepth: 0.4, sectionTrimDb: 1.5)
-        case .club:
-            return ModeDynamics(mbThresholdsDb: [-24, -22, -22, -26], mbRatios: [2.2, 2.2, 2.2, 2.2],
-                                mbAttackMs: 20, mbReleaseMs: 150,
-                                clipDriveDb: 3.0, clipCeilingDb: -1.0,
-                                transientAttack: 0.35, transientSustain: 0.0,
-                                upwardDepth: 0.3, upwardMix: 0.2,
-                                suppressDepth: 0.6, sectionTrimDb: 2.0)
-        case .ivory:
-            return ModeDynamics(mbThresholdsDb: [-22, -20, -20, -24], mbRatios: [1.3, 1.3, 1.3, 1.3],
-                                mbAttackMs: 50, mbReleaseMs: 300,
-                                clipDriveDb: 0.0, clipCeilingDb: -1.0,
-                                transientAttack: 0.1, transientSustain: 0.0,
-                                upwardDepth: 0.25, upwardMix: 0.2,
-                                suppressDepth: 0.3, sectionTrimDb: 1.0)
-        case .vox:
-            return ModeDynamics(mbThresholdsDb: [-22, -20, -20, -24], mbRatios: [1.6, 1.6, 1.6, 1.6],
-                                mbAttackMs: 30, mbReleaseMs: 200,
-                                clipDriveDb: 1.0, clipCeilingDb: -1.0,
-                                transientAttack: 0.2, transientSustain: 0.0,
-                                upwardDepth: 0.35, upwardMix: 0.25,
-                                suppressDepth: 0.8, sectionTrimDb: 1.5)
-        }
     }
 }
 
@@ -441,47 +376,9 @@ enum SectionMeter {
     }
 }
 
-// MARK: - One-call dynamics chain (hook for every render)
+// MARK: - Dynamics metering (analysis + UI)
 
 enum DynamicsChain {
-    /// Transient shaping on the raw load — transients are cleanest pre-EQ.
-    static func applyTransient(channels: [[Double]], fs: Double, metrics: Metrics, mode: MasteringMode) -> [[Double]] {
-        let cfg = ModeDynamics.forMode(mode)
-        var td = TransientDesigner(fs: fs, channels: channels.count,
-                                   attack: cfg.transientAttack, sustain: cfg.transientSustain)
-        var work = channels
-        let frames = work.first?.count ?? 0
-        td.process(channels: &work, frames: frames)
-        return work
-    }
-
-    /// Post-chain corrective stages: tamer → multiband → upward → section trim.
-    /// Runs on the finished work buffer, ahead of the closed-loop landing.
-    static func process(work: [[Double]], fs: Double, metrics: Metrics, mode: MasteringMode,
-                        targetLufs: Double) -> [[Double]] {
-        let cfg = ModeDynamics.forMode(mode)
-        var out = work
-        let frames = out.first?.count ?? 0
-        let channels = out.count
-        guard frames > 0 else { return out }
-
-        var sup = ResonanceSuppressor(fs: fs, channels: channels, depth: cfg.suppressDepth)
-        sup.process(channels: &out, frames: frames)
-
-        var mb = MultibandCompressor(fs: fs, channels: channels,
-                                     thresholdsDb: cfg.mbThresholdsDb, ratios: cfg.mbRatios,
-                                     attackMs: cfg.mbAttackMs, releaseMs: cfg.mbReleaseMs)
-        mb.process(channels: &out, frames: frames)
-
-        var up = UpwardPath(fs: fs, channels: channels, depth: cfg.upwardDepth, mix: cfg.upwardMix)
-        up.process(channels: &out, frames: frames)
-
-        let sections = SectionMeter.analyze(buffer: AudioBuffer(channels: out, sampleRate: fs))
-        SectionMeter.adaptiveTrim(work: &out, sections: sections, fs: fs,
-                                  targetLufs: targetLufs, maxDb: cfg.sectionTrimDb)
-        return out
-    }
-
     /// Full metering report for analysis + UI.
     static func report(buffer: AudioBuffer) -> DynamicsReport {
         let sections = SectionMeter.analyze(buffer: buffer)

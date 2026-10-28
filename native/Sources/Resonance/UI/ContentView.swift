@@ -914,10 +914,31 @@ struct MasterOptionsPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("HOW TO MASTER")
-                .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                .tracking(1.5)
-                .foregroundStyle(Theme.textSecondary)
+            HStack(spacing: 4) {
+                Text("HOW TO MASTER")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .tracking(1.5)
+                    .foregroundStyle(Theme.textSecondary)
+                Spacer()
+                ForEach(OutputFormat.allCases, id: \.self) { fmt in
+                    let on = state.outputFormat == fmt
+                    Button {
+                        state.outputFormat = fmt
+                        state.addLog("Output format → \(fmt.label)")
+                    } label: {
+                        Text(fmt.label)
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .foregroundStyle(on ? Theme.accent : Theme.textSecondary)
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .background(on ? Theme.accentDim : Color.clear)
+                            .overlay(RoundedRectangle(cornerRadius: 4)
+                                .stroke(on ? Theme.accent.opacity(0.5) : Theme.glassBorder))
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .infoHover(Info.outputFormat)
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
                 ForEach(MasteringMode.allCases, id: \.self) { mode in
                     ModeCard(mode: mode,

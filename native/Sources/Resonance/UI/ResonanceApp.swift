@@ -34,6 +34,21 @@ struct ResonanceApp: App {
 
     init() {
         let args = CommandLine.arguments
+        // Headless: Resonance master <in> <out> [core|pure|club] [wav|mp3]
+        if args.count >= 4, args[1] == "master" {
+            let mode = MasteringMode.allCases.first { $0.displayName == (args.count > 4 ? args[4] : "core") } ?? .core
+            let fmt = OutputFormat(rawValue: args.count > 5 ? args[5] : "wav") ?? .wav
+            do {
+                let empty = Metrics(integratedLufs: 0, truePeakDb: 0, spectralSlope: 0, rSquared: 0, correlation: 1, stereoWidth: 0)
+                let r = try MasteringEngine().render(mode: mode, input: URL(fileURLWithPath: args[2]),
+                                                     output: URL(fileURLWithPath: args[3]), metrics: empty, format: fmt)
+                print("\(mode.displayName) \(fmt.rawValue): \(r.summary) · content ≤ \(Int(r.contentLimitHz)) Hz")
+                exit(0)
+            } catch {
+                print("error: \(error.localizedDescription)")
+                exit(1)
+            }
+        }
         if args.count >= 3, args[1] == "analyze" {
             let url = URL(fileURLWithPath: args[2])
             do {

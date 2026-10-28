@@ -28,9 +28,16 @@ struct Biquad {
 
     mutating func reset() { x1 = 0; x2 = 0; y1 = 0; y2 = 0 }
 
+    /// Stability guard: a design frequency at or above Nyquist folds the
+    /// poles outside the unit circle and the filter self-oscillates (the
+    /// full-scale "beep" on 16 kHz sources). Clamp every design to 0.45·fs.
+    static func safeFrequency(_ f0: Double, fs: Double) -> Double {
+        min(max(f0, 1.0), 0.45 * fs)
+    }
+
     // RBJ cookbook designs
     static func highPass(fs: Double, f0: Double, q: Double) -> Biquad {
-        let w0 = 2 * Double.pi * f0 / fs
+        let w0 = 2 * Double.pi * Biquad.safeFrequency(f0, fs: fs) / fs
         let alpha = sin(w0) / (2 * q)
         let cw = cos(w0)
         return Biquad(b0: (1 + cw) / 2, b1: -(1 + cw), b2: (1 + cw) / 2,
@@ -39,7 +46,7 @@ struct Biquad {
 
     static func peak(fs: Double, f0: Double, gainDb: Double, q: Double) -> Biquad {
         let A = pow(10, gainDb / 40)
-        let w0 = 2 * Double.pi * f0 / fs
+        let w0 = 2 * Double.pi * Biquad.safeFrequency(f0, fs: fs) / fs
         let alpha = sin(w0) / (2 * q)
         let cw = cos(w0)
         return Biquad(b0: 1 + alpha * A, b1: -2 * cw, b2: 1 - alpha * A,
@@ -48,7 +55,7 @@ struct Biquad {
 
     static func highShelf(fs: Double, f0: Double, gainDb: Double, q: Double) -> Biquad {
         let A = pow(10, gainDb / 40)
-        let w0 = 2 * Double.pi * f0 / fs
+        let w0 = 2 * Double.pi * Biquad.safeFrequency(f0, fs: fs) / fs
         let alpha = sin(w0) / (2 * q)
         let cw = cos(w0)
         let sqA = sqrt(A)
@@ -63,7 +70,7 @@ struct Biquad {
 
     static func lowShelf(fs: Double, f0: Double, gainDb: Double, q: Double) -> Biquad {
         let A = pow(10, gainDb / 40)
-        let w0 = 2 * Double.pi * f0 / fs
+        let w0 = 2 * Double.pi * Biquad.safeFrequency(f0, fs: fs) / fs
         let alpha = sin(w0) / (2 * q)
         let cw = cos(w0)
         let sqA = sqrt(A)

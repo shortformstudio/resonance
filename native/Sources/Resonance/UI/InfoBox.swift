@@ -124,6 +124,18 @@ enum Info {
         title: "vox · forward vocal presence",
         text: "Puts the voice on top without harshness. An 80Hz high-pass clears rumble off the vocal range, a 3kHz presence bell lifts intelligibility, air shelf keeps it open, and light 1.3:1 glue lands at -14 LUFS.")
 
+    static let rateGuard = HoverInfo(
+        title: "rate guard",
+        text: "Low-rate sources (voice memos, TTS, 16–32 kHz files) are converted to 48 kHz with Apple's mastering-grade resampler before any processing. Filters and the true-peak detector need room above the audio band — without it they can go unstable.")
+
+    static let gainStaging = HoverInfo(
+        title: "gain staging",
+        text: "The track is first set to a -18 LUFS working level so every stage sees the same drive. Compressor thresholds are then placed on percentiles of the track's own loudness, so quiet demos and hot mixes are treated alike.")
+
+    static let outputFormat = HoverInfo(
+        title: "output format",
+        text: "WAV prints a 24-bit lossless master. MP3 prints a 320 kbps CBR file through LAME at its highest quality setting, dithered to 16-bit first. Both land at -1 dBTP so lossy playback stays clean.")
+
     static let transientDetail = HoverInfo(
         title: "transient detail",
         text: "Two-band attack/sustain shaping ahead of everything else. Attack lifts stick, pluck, and consonant definition; sustain raises body and room. Works on the clean signal before saturation reshapes it.")

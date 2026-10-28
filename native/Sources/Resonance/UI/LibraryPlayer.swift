@@ -71,15 +71,15 @@ final class PlayerController: ObservableObject {
                 if ext == "json", rawName.hasSuffix(".meta") {
                     let metaBase = String(rawName.dropLast(".meta".count))
                     if let data = try? Data(contentsOf: item),
-                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: String],
-                       let raw = json["engine"],
+                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let raw = json["engine"] as? String,
                        let mode = MasteringMode(rawValue: raw) {
                         engineMap[metaBase] = mode
                     }
                     continue
                 }
 
-                guard ext == "wav" else { continue }
+                guard ext == "wav" || ext == "mp3" else { continue }
                 masterMap[rawName] = item
                 modifiedMap[rawName] = max(modifiedMap[rawName] ?? .distantPast, mod)
                 if let player = try? AVAudioPlayer(contentsOf: item) {

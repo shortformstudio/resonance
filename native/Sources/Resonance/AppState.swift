@@ -35,6 +35,13 @@ final class AppState: ObservableObject {
         set { masteringModeRaw = newValue.rawValue }
     }
 
+    // Output format (user pick: wav or mp3)
+    @AppStorage("outputFormatRaw") var outputFormatRaw: String = OutputFormat.wav.rawValue
+    var outputFormat: OutputFormat {
+        get { OutputFormat(rawValue: outputFormatRaw) ?? .wav }
+        set { outputFormatRaw = newValue.rawValue }
+    }
+
     // Single-blurb chat viewport (one mastering-expert blurb at a time)
     @Published var visibleChatIdx = 0
     @Published var chatPaused = false
@@ -175,8 +182,9 @@ final class AppState: ObservableObject {
                 tone: .working, title: "mastering")
 
         let metrics = analysis.metrics
+        let format = outputFormat
         Task.detached(priority: .userInitiated) { [weak self] in
-            let result = Self.runMaster(input: file, metrics: metrics, mode: mode)
+            let result = Self.runMaster(input: file, metrics: metrics, mode: mode, format: format)
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.isMastering = false
@@ -184,6 +192,7 @@ final class AppState: ObservableObject {
                 case .success(let master):
                     let displayName = master.outputPath.deletingPathExtension().lastPathComponent
                     self.addToHistory(name: "MASTER: \(displayName)", path: master.outputPath)
+                    if let r = master.report { self.addLog("Chain: \(r.summary)") }
                     self.addLog("SEQUENCE COMPLETE (\(master.engineMode.chatLabel)). Exported to resonance masters/")
                     self.addChat("done — mastered with **\(master.engineMode.chatLabel)**. master's in **resonance masters/** folder. trust your ears over the meters.",
                                  tone: .done, title: nil)
@@ -195,23 +204,31 @@ final class AppState: ObservableObject {
                     NSWorkspace.shared.activateFileViewerSelecting([master.videoPath ?? master.outputPath])
                 case .failure(let error):
                     self.addLog("EXECUTION ERROR: \(error.localizedDescription)")
+                    self.addChat("couldn't print that one — \(error.localizedDescription)", tone: .caution, title: "hit a snag")
                 }
             }
         }
     }
 
     /// Master one file: chain render + original reference copy.
-    nonisolated static func runMaster(input: URL, metrics: Metrics, mode: MasteringMode = .core) -> Result<MasterResult, Error> {
+    nonisolated static func runMaster(input: URL, metrics: Metrics, mode: MasteringMode = .core,
+                                      format: OutputFormat = .wav) -> Result<MasterResult, Error> {
         do {
             let fm = FileManager.default
             try fm.createDirectory(at: masterDir, withIntermediateDirectories: true)
             try fm.createDirectory(at: originalDir, withIntermediateDirectories: true)
 
             let naming = MasterNamer.generate(in: masterDir)
-            let output = masterDir.appendingPathComponent("\(naming.masterName).wav")
-            _ = try MasteringEngine().render(mode: mode, input: input, output: output, metrics: metrics)
+            let output = masterDir.appendingPathComponent("\(naming.masterName).\(format.fileExtension)")
+            let report = try MasteringEngine().render(mode: mode, input: input, output: output,
+                                                      metrics: metrics, format: format)
 
-            let meta: [String: String] = ["engine": mode.rawValue]
+            let meta: [String: String] = [
+                "engine": mode.rawValue,
+                "format": format.rawValue,
+                "lufs": String(format: "%.2f", report.outputLufs),
+                "truePeakDb": String(format: "%.2f", report.outputTruePeakDb)
+            ]
             let metaURL = masterDir.appendingPathComponent("\(naming.masterName).meta.json")
             let metaData = try JSONSerialization.data(withJSONObject: meta, options: [])
             try metaData.write(to: metaURL)
@@ -231,7 +248,14 @@ final class AppState: ObservableObject {
             if VideoAudio.isVideo(input) {
                 do {
                     let movieOut = masterDir.appendingPathComponent("\(naming.masterName).mov")
-                    try VideoAudio.muxMasteredAudio(video: input, masteredAudio: output, output: movieOut)
+                    // Picture remux always takes the lossless print.
+                    var muxAudio = output
+                    if format != .wav {
+                        muxAudio = fm.temporaryDirectory.appendingPathComponent("\(naming.masterName)-mux.wav")
+                        try MasteringEngine().render(mode: mode, input: input, output: muxAudio, metrics: metrics, format: .wav)
+                    }
+                    defer { if muxAudio != output { try? fm.removeItem(at: muxAudio) } }
+                    try VideoAudio.muxMasteredAudio(video: input, masteredAudio: muxAudio, output: movieOut)
                     videoPath = movieOut
                 } catch {
                     warning = (warning.map { $0 + " · " } ?? "") + "Video remux failed: \(error.localizedDescription)"
@@ -241,7 +265,7 @@ final class AppState: ObservableObject {
             return .success(MasterResult(outputPath: output, comparisonPath: origCopy,
                                          abSamplePath: nil, videoPath: videoPath,
                                          warning: warning, abWarning: nil,
-                                         engineMode: mode))
+                                         engineMode: mode, report: report))
         } catch {
             return .failure(error)
         }
@@ -335,6 +359,7 @@ final class AppState: ObservableObject {
         guard !isBatchRunning else { return }
         isBatchRunning = true
         let mode = masteringMode
+        let format = outputFormat
         addChat("starting the batch with **\(mode.displayName)**. i'll tailor each master to its own analysis — the loud ones get eased off, the dark ones get lifted. sit back.",
                 tone: .working, title: "mastering all")
 
@@ -350,7 +375,7 @@ final class AppState: ObservableObject {
                 let url = self.batchTracks[index].url
                 let metrics = analysis.metrics
                 let result: Result<MasterResult, Error> = await Task.detached(priority: .userInitiated) {
-                    Self.runMaster(input: url, metrics: metrics, mode: trackMode)
+                    Self.runMaster(input: url, metrics: metrics, mode: trackMode, format: format)
                 }.value
                 guard self.batchTracks.indices.contains(index) else { return }
                 switch result {
